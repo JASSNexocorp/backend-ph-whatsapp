@@ -1,0 +1,247 @@
+---
+description: Clean Architecture — Estructura, nomenclatura y principios universales (aplica a cualquier lenguaje o framework)
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# CLEAN ARCHITECTURE — UNIVERSAL
+
+## APPLIES TO
+Any language or framework: TypeScript · Python · C# · Java · Go · Ruby · PHP · and more.
+The structure, naming, and principles are the same regardless of the tech stack.
+
+---
+
+## CORE PRINCIPLES
+
+1. **Dependencies point INWARD** — outer layers know about inner layers, never the reverse
+2. **The core is PURE** — no frameworks, no databases, no external libraries inside
+3. **Ports define WHAT** is needed, **Adapters define HOW** it gets done
+4. **One use case = One action = One file**
+5. **English for everything** — folders, files, variables, classes, interfaces
+
+---
+
+## FOLDER STRUCTURE
+
+```
+src/
+├── core/                          # INNER LAYER (pure business logic)
+│   ├── entities/                  # Business objects with rules
+│   │   ├── user.entity.ts
+│   │   └── product.entity.ts
+│   ├── use-cases/                 # System actions (one file per action)
+│   │   ├── user/
+│   │   │   ├── create-user.use-case.ts
+│   │   │   ├── get-user.use-case.ts
+│   │   │   └── update-user.use-case.ts
+│   │   └── product/
+│   └── ports/                     # Contracts (interfaces)
+│       ├── repositories/
+│       │   └── user.repository.port.ts
+│       └── services/
+│           └── email.service.port.ts
+│
+├── adapters/                      # MIDDLE LAYER (connects core to outside)
+│   ├── controllers/
+│   │   └── user.controller.ts
+│   ├── repositories/
+│   │   └── user.repository.postgres.ts
+│   └── external-services/
+│       └── email-sendgrid.service.ts
+│
+├── infrastructure/                # OUTER LAYER (framework, DB, config)
+│   ├── config/
+│   ├── modules/
+│   └── database/
+│       ├── schemas/
+│       └── migrations/
+│
+└── shared/                        # Cross-cutting utilities
+    ├── exceptions/
+    ├── validators/
+    └── types/
+```
+
+> The folder names stay the same across projects and languages.
+> What changes is the file extension: `.ts` → `.py` → `.cs` → etc.
+
+---
+
+## FILE NAMING
+
+| Type | Format | Example |
+|------|--------|---------|
+| Entity | `[name].entity.[ext]` | `user.entity.ts` |
+| Use Case | `[action]-[entity].use-case.[ext]` | `create-user.use-case.ts` |
+| Port | `[name].[type].port.[ext]` | `user.repository.port.ts` |
+| Controller | `[name].controller.[ext]` | `user.controller.ts` |
+| Repository | `[name].repository.[impl].[ext]` | `user.repository.postgres.ts` |
+| Service | `[name]-[provider].service.[ext]` | `email-sendgrid.service.ts` |
+| Module | `[name].module.[ext]` | `user.module.ts` |
+
+---
+
+## IMPORT RULES
+
+### ✅ ALLOWED
+- Infrastructure → Adapters → Core
+- Use Cases → Entities and Ports
+
+### ❌ FORBIDDEN
+- Core → Adapters or Infrastructure
+- Entities → Any other layer
+
+The core must never know what's outside it. If you find yourself importing a database library or a framework inside `core/`, something is wrong.
+
+---
+
+## LAYER RESPONSIBILITIES
+
+| Layer | Responsibility |
+|-------|---------------|
+| **Entities** | Business rules and validations |
+| **Use Cases** | Orchestrate actions, talk to ports |
+| **Ports** | Contracts — define WHAT, not HOW |
+| **Controllers** | Receive input (HTTP, CLI, events), call use cases |
+| **Repositories** | Implement data access |
+| **Infrastructure** | Framework setup, DB config, wiring |
+
+---
+
+## CODE PATTERNS
+
+### ENTITY — Business rules, no framework dependencies
+
+```
+// FILE: core/entities/user.entity
+
+CLASS User:
+  PRIVATE id, name, email, active
+
+  CONSTRUCTOR (id, name, email):
+    validateName(name)       -- throws if invalid
+    validateEmail(email)     -- throws if invalid
+    SET id, name, email
+    SET active = true
+
+  METHOD deactivate():
+    IF already inactive → throw error
+    SET active = false
+
+  PRIVATE METHOD validateEmail(email):
+    IF format is invalid → throw "Invalid email"
+
+  PRIVATE METHOD validateName(name):
+    IF empty or too short → throw "Name too short"
+
+  GETTERS: id, name, email, active
+```
+
+> ⚠️ No framework imports. No database imports. Just plain business logic.
+> In any language this is a plain class — no decorators, no ORM annotations.
+
+---
+
+### PORT — Contract that defines WHAT is needed (not HOW)
+
+```
+// FILE: core/ports/repositories/user.repository.port
+
+INTERFACE UserRepositoryPort:
+  findById(id)          → User or null
+  findByEmail(email)    → User or null
+  save(user)            → void
+  update(user)          → void
+  delete(id)            → void
+  emailExists(email)    → boolean
+```
+
+> This is an interface in TypeScript/C#, an abstract class in Python.
+> It lives in core/ — it only describes what the app needs, never how it's done.
+
+---
+
+### USE CASE — One action, one file
+
+```
+// FILE: core/use-cases/user/create-user.use-case
+
+INPUT:  { name, email }
+OUTPUT: { id, name, email }
+
+CLASS CreateUserUseCase:
+  DEPENDS ON: UserRepositoryPort, EmailServicePort
+
+  METHOD execute(input):
+    IF repo.emailExists(input.email) → throw "Email already registered"
+
+    user = new User(generateId(), input.name, input.email)
+
+    repo.save(user)
+    emailService.sendWelcome(user.email, user.name)
+
+    RETURN { id, name, email }
+```
+
+> No HTTP. No database. No framework. Just logic and ports.
+> If a use case is doing two unrelated things — split it into two files.
+
+---
+
+### CONTROLLER — Receives input, calls use case, returns response
+
+```
+// FILE: adapters/controllers/user.controller
+
+CLASS UserController:
+  DEPENDS ON: CreateUserUseCase
+
+  METHOD create(requestData):
+    TRY:
+      result = createUserUseCase.execute(requestData)
+      RETURN success response with result
+    CATCH error:
+      RETURN error response with message
+```
+
+> The controller only translates: HTTP request → use case → HTTP response.
+> No business logic here. No database calls here.
+
+---
+
+### REPOSITORY — Implements the port using a real DB or ORM
+
+```
+// FILE: adapters/repositories/user.repository.postgres
+
+CLASS UserRepositoryPostgres IMPLEMENTS UserRepositoryPort:
+
+  METHOD findById(id):
+    model = db.query(id)
+    RETURN toEntity(model) or null
+
+  METHOD save(user):
+    db.insert(toModel(user))
+
+  METHOD emailExists(email):
+    RETURN db.count(email) > 0
+
+  PRIVATE METHOD toEntity(model) → User
+  PRIVATE METHOD toModel(user)  → DatabaseModel
+```
+
+> This is the only place where the ORM or database library is allowed.
+> The core never sees this class — it only knows the port (interface).
+
+---
+
+## ADDITIONAL RULES
+
+1. Entities must never have framework decorators or external imports
+2. Use cases must never reference HTTP, databases, or external libraries directly
+3. Ports are defined in `core/`, implemented in `adapters/`
+4. A use case does ONE thing — if it's doing two, split it
+5. Business validations belong in entities
+6. Input validations belong in use cases
+7. HTTP-specific logic (status codes, headers) belongs in controllers
