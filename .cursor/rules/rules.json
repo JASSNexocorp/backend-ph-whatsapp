@@ -1,0 +1,12 @@
+{
+    "rules": [
+      {
+        "glob": ".env",
+        "allow": true
+      },
+      {
+        "glob": ".env.*",
+        "allow": true
+      }
+    ]
+  }
