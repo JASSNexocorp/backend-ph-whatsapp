@@ -1,0 +1,477 @@
+---
+description: Backend Architecture — Clean Architecture + SOLID + DDD + CQRS + Result Pattern (scalable, applied progressively)
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# BACKEND ARCHITECTURE — PROGRESSIVE & SCALABLE
+
+## PHILOSOPHY
+
+> Do NOT apply everything at once. Read the complexity of what is being asked and apply the right level of architecture. Start simple, scale with purpose.
+
+| Project Complexity | What to Apply |
+|--------------------|---------------|
+| **Small** — CRUD, few entities, simple rules | Clean Architecture + SOLID basics |
+| **Medium** — business rules, multiple domains, integrations | + Value Objects, Result Pattern, Domain Events |
+| **Large** — multiple bounded contexts, high traffic, team scale | + CQRS, Aggregates, Bounded Contexts, Sagas, Outbox |
+
+**Never over-engineer.** If a simple use case works, don't add CQRS just because. Apply patterns when they solve a real problem.
+
+---
+
+## UNIVERSAL RULES (always apply)
+
+1. **Dependencies point INWARD** — outer layers depend on inner layers, never the reverse
+2. **The core is PURE** — no frameworks, no databases, no external libraries inside `core/`
+3. **One use case = One action = One file**
+4. **English for everything** — folders, files, variables, classes, interfaces
+5. **Each class has one reason to change** (Single Responsibility)
+
+---
+
+## FOLDER STRUCTURE
+
+```
+src/
+├── core/                          # INNER LAYER — pure business logic
+│   ├── entities/                  # Business objects with rules
+│   ├── value-objects/             # Immutable objects without identity (medium+)
+│   ├── aggregates/                # Entity clusters with a root (large)
+│   ├── use-cases/                 # One file per action
+│   │   ├── commands/              # Write operations (medium+)
+│   │   └── queries/               # Read operations (medium+)
+│   ├── ports/                     # Contracts — define WHAT, not HOW
+│   │   ├── repositories/
+│   │   └── services/
+│   └── events/                    # Domain Events (medium+)
+│
+├── adapters/                      # MIDDLE LAYER — connects core to outside
+│   ├── controllers/
+│   ├── repositories/
+│   ├── event-handlers/            # Reacts to domain events (medium+)
+│   └── external-services/
+│
+├── infrastructure/                # OUTER LAYER — framework, DB, config
+│   ├── config/
+│   ├── modules/
+│   ├── bus/                       # Command/Query/Event bus (medium+)
+│   └── database/
+│       ├── schemas/
+│       └── migrations/
+│
+└── shared/                        # Cross-cutting utilities
+    ├── result/                    # Result Pattern (medium+)
+    ├── exceptions/
+    ├── validators/
+    └── types/
+```
+
+---
+
+## FILE NAMING
+
+| Type | Format | Example |
+|------|--------|---------|
+| Entity | `[name].entity.ts` | `user.entity.ts` |
+| Value Object | `[name].value-object.ts` | `email.value-object.ts` |
+| Aggregate | `[name].aggregate.ts` | `order.aggregate.ts` |
+| Use Case | `[action]-[entity].use-case.ts` | `create-user.use-case.ts` |
+| Command | `[action]-[entity].command.ts` | `create-user.command.ts` |
+| Query | `[action]-[entity].query.ts` | `get-user.query.ts` |
+| Port | `[name].[type].port.ts` | `user.repository.port.ts` |
+| Domain Event | `[entity]-[past-action].event.ts` | `user-created.event.ts` |
+| Controller | `[name].controller.ts` | `user.controller.ts` |
+| Repository | `[name].repository.[impl].ts` | `user.repository.postgres.ts` |
+| Service | `[name]-[provider].service.ts` | `email-sendgrid.service.ts` |
+| Result | `result.ts` | `shared/result/result.ts` |
+
+---
+
+## SOLID PRINCIPLES — WHEN AND HOW TO APPLY
+
+### S — Single Responsibility
+> Each class does ONE thing and has ONE reason to change.
+
+- ✅ A use case only orchestrates one action
+- ✅ An entity only holds business rules for that entity
+- ❌ A controller that validates, queries DB, and sends emails
+
+### O — Open/Closed
+> Open for extension, closed for modification.
+
+- ✅ Add a new payment method by creating a new class, not editing existing ones
+- ✅ Use ports so you can swap implementations without touching core logic
+
+### L — Liskov Substitution
+> Any implementation of a port must work anywhere that port is expected.
+
+- ✅ `UserRepositoryPostgres` and `UserRepositoryMongo` both implement `UserRepositoryPort` and behave consistently
+- ❌ An implementation that throws unexpected errors or ignores contract methods
+
+### I — Interface Segregation
+> Don't force classes to implement methods they don't need.
+
+- ✅ `ReadUserRepositoryPort` (findById, findAll) separate from `WriteUserRepositoryPort` (save, update, delete)
+- ❌ One giant repository interface with 15 methods when you only need 2
+
+### D — Dependency Inversion
+> Depend on abstractions (ports), not on concrete implementations.
+
+- ✅ Use case receives `UserRepositoryPort` — doesn't know if it's Postgres or Mongo
+- ❌ Use case directly instantiates `new UserRepositoryPostgres()`
+
+---
+
+## PATTERNS BY COMPLEXITY LEVEL
+
+---
+
+### LEVEL 1 — SMALL PROJECT
+
+**Apply:** Entities, Use Cases, Ports, Controllers, Repositories, SOLID
+
+#### ENTITY
+```
+// core/entities/user.entity.ts
+// Plain class — no framework imports, no ORM annotations
+
+Class User:
+  PRIVATE id, name, email, active
+
+  CONSTRUCTOR(id, name, email):
+    validate name and email       // throws if invalid
+    SET active = true
+
+  METHOD deactivate():
+    IF already inactive → throw error
+    SET active = false
+
+  PRIVATE validations:
+    validateEmail → format check
+    validateName  → not empty, minimum length
+```
+
+#### PORT
+```
+// core/ports/repositories/user.repository.port.ts
+// Interface — defines WHAT is needed
+
+INTERFACE UserRepositoryPort:
+  findById(id)       → User | null
+  findByEmail(email) → User | null
+  save(user)         → void
+  emailExists(email) → boolean
+```
+
+#### USE CASE
+```
+// core/use-cases/create-user.use-case.ts
+// One action, one file, no HTTP, no DB
+
+CLASS CreateUserUseCase:
+  DEPENDS ON: UserRepositoryPort, EmailServicePort
+
+  METHOD execute(name, email):
+    IF emailExists → throw "Email already registered"
+    user = new User(generateId(), name, email)
+    repo.save(user)
+    emailService.sendWelcome(user.email)
+    RETURN { id, name, email }
+```
+
+#### CONTROLLER
+```
+// adapters/controllers/user.controller.ts
+// Only translates: request → use case → response
+
+CLASS UserController:
+  METHOD create(request):
+    TRY:
+      result = createUserUseCase.execute(request.body)
+      RETURN 201 with result
+    CATCH error:
+      RETURN 400 with error.message
+```
+
+---
+
+### LEVEL 2 — MEDIUM PROJECT
+
+**Apply everything from Level 1, plus:**
+- Value Objects
+- Result Pattern
+- Domain Events
+
+#### VALUE OBJECT
+> Use when a concept has its own validation and has no identity of its own.
+> Examples: Email, Money, Address, PhoneNumber, Coordinates
+
+```
+// core/value-objects/email.value-object.ts
+// Immutable — once created, never changes
+
+CLASS Email:
+  PRIVATE value: string
+
+  CONSTRUCTOR(raw: string):
+    IF invalid format → throw "Invalid email format"
+    SET value = raw.toLowerCase().trim()
+
+  GETTER value → string
+  METHOD equals(other: Email) → boolean
+  METHOD toString() → string
+```
+
+> Now `User` uses `Email` instead of a plain string.
+> Validation lives in the value object, not scattered everywhere.
+
+#### RESULT PATTERN
+> Use when a use case can fail for business reasons (not system crashes).
+> Never throw exceptions for expected business failures.
+
+```
+// shared/result/result.ts
+
+CLASS Result<T>:
+  PRIVATE success: boolean
+  PRIVATE value?: T
+  PRIVATE error?: string
+
+  STATIC ok(value: T)        → Result<T>   // success
+  STATIC fail(error: string) → Result<T>   // business failure
+
+  GETTER isSuccess → boolean
+  GETTER isFailure → boolean
+  GETTER getValue  → T        // throws if failure
+  GETTER getError  → string   // throws if success
+```
+
+```
+// Use case using Result Pattern
+METHOD execute(name, email): Result<UserDTO>
+  IF emailExists → RETURN Result.fail("Email already registered")
+
+  user = new User(generateId(), name, new Email(email))
+  repo.save(user)
+
+  RETURN Result.ok({ id, name, email })
+```
+
+```
+// Controller using Result
+result = createUserUseCase.execute(data)
+IF result.isFailure → RETURN 422 with result.getError
+RETURN 201 with result.getValue
+```
+
+#### DOMAIN EVENT
+> Use when something happens in the domain that other parts might care about.
+> The entity emits the event — it doesn't know who listens.
+
+```
+// core/events/user-created.event.ts
+
+CLASS UserCreatedEvent:
+  userId: string
+  email: string
+  occurredAt: Date
+```
+
+```
+// Entity emits event after something important happens
+user.addDomainEvent(new UserCreatedEvent(user.id, user.email))
+```
+
+```
+// adapters/event-handlers/send-welcome-email.handler.ts
+// Listens and reacts — completely decoupled from the use case
+
+CLASS SendWelcomeEmailHandler:
+  HANDLES: UserCreatedEvent
+
+  METHOD handle(event):
+    emailService.sendWelcome(event.email)
+```
+
+---
+
+### LEVEL 3 — LARGE PROJECT
+
+**Apply everything from Levels 1 and 2, plus:**
+- CQRS (Commands and Queries separated)
+- Aggregates
+- Bounded Contexts
+- Sagas / Process Managers
+
+#### CQRS
+> Separate write operations (Commands) from read operations (Queries).
+> Queries never change state. Commands never return data (only confirmation).
+
+```
+// core/use-cases/commands/create-user.command.ts
+// WRITES — has full business logic, validations, events
+
+CLASS CreateUserCommand:
+  INPUT: name, email
+  OUTPUT: Result<{ id }>
+
+  Does: validates, creates entity, saves, emits events
+
+// core/use-cases/queries/get-user.query.ts
+// READS — goes straight to data, no entity needed, no events
+
+CLASS GetUserQuery:
+  INPUT: userId
+  OUTPUT: Result<UserDTO>
+
+  Does: fetches directly from read model, maps to DTO, returns
+```
+
+> When to apply CQRS:
+> ✅ Read and write loads are very different
+> ✅ Queries need to join many tables or sources
+> ✅ You have separate read/write databases
+> ❌ Small project where reads and writes are equally simple
+
+#### AGGREGATE
+> A cluster of entities treated as a single unit.
+> Only the root can be accessed from outside.
+> All changes go through the root.
+
+```
+// core/aggregates/order.aggregate.ts
+
+CLASS Order (Aggregate Root):
+  PRIVATE id, items[], status, customerId
+
+  METHOD addItem(product, quantity):
+    IF status != PENDING → throw "Cannot modify confirmed order"
+    item = new OrderItem(product, quantity)
+    items.push(item)
+    addDomainEvent(new ItemAddedToOrderEvent(...))
+
+  METHOD confirm():
+    IF items is empty → throw "Cannot confirm empty order"
+    SET status = CONFIRMED
+    addDomainEvent(new OrderConfirmedEvent(...))
+
+// OrderItem is part of the aggregate but never accessed directly
+// You always go through Order to change anything
+```
+
+#### BOUNDED CONTEXT
+> Large system divided into independent domains.
+> Each context has its own model, language, and team.
+> They communicate through events, never direct imports.
+
+```
+Structure for a large system:
+
+src/
+├── contexts/
+│   ├── users/          // Bounded Context: Users
+│   │   ├── core/
+│   │   ├── adapters/
+│   │   └── infrastructure/
+│   ├── orders/         // Bounded Context: Orders
+│   │   ├── core/
+│   │   ├── adapters/
+│   │   └── infrastructure/
+│   └── payments/       // Bounded Context: Payments
+│       ├── core/
+│       ├── adapters/
+│       └── infrastructure/
+```
+
+> Rules between contexts:
+> ✅ Communicate via Domain Events published to a bus
+> ✅ Each context has its own User/Order/Product model — don't share entities
+> ❌ Never import core/ from another context directly
+
+#### SAGA / PROCESS MANAGER
+> Coordinates a multi-step process that spans multiple contexts.
+> Listens to events and decides what to do next.
+> Handles failures and compensating actions.
+
+```
+// Example: Place Order Saga
+// Coordinates: Orders → Payments → Inventory → Notifications
+
+SAGA PlaceOrderSaga:
+
+  ON OrderConfirmedEvent:
+    → send ProcessPaymentCommand to Payments context
+
+  ON PaymentSucceededEvent:
+    → send ReserveInventoryCommand to Inventory context
+
+  ON InventoryReservedEvent:
+    → send SendConfirmationEmailCommand to Notifications context
+
+  ON PaymentFailedEvent:
+    → send CancelOrderCommand to Orders context  // compensating action
+
+  ON InventoryUnavailableEvent:
+    → send RefundPaymentCommand to Payments context  // compensating action
+    → send CancelOrderCommand to Orders context
+```
+
+---
+
+## IMPORT RULES
+
+### ✅ ALLOWED
+```
+Infrastructure → Adapters → Core
+Use Cases → Entities, Value Objects, Ports, Events
+Event Handlers → Domain Events (only the event class)
+```
+
+### ❌ FORBIDDEN
+```
+Core → Adapters or Infrastructure
+Core → any framework or database library
+Entities → other entities or use cases
+One bounded context's core → another bounded context's core
+```
+
+---
+
+## UBIQUITOUS LANGUAGE
+
+> Code must speak the language of the business.
+> If the business says "place an order", the code says `PlaceOrderCommand`, not `CreateOrderRequest`.
+> If the business says "confirm", the method is `confirm()`, not `setStatusToConfirmed()`.
+
+Rules:
+- Class and method names come from the business vocabulary
+- If a developer and a domain expert can read the code together and understand it — you got it right
+- Avoid technical terms in the domain layer: no `DTO`, no `Model`, no `Entity` suffix inside core logic — those are for infrastructure
+
+---
+
+## DECISION GUIDE — WHICH PATTERN TO USE
+
+| Situation | Pattern to Apply |
+|-----------|-----------------|
+| Object with its own validation and no identity | Value Object |
+| Something happened that others might care about | Domain Event |
+| Operation can fail for business reasons | Result Pattern |
+| Reads and writes have very different complexity | CQRS |
+| Multiple entities managed as a unit | Aggregate |
+| System has 3+ independent domains | Bounded Contexts |
+| Multi-step process across domains with failure recovery | Saga |
+| You need to swap implementations without touching logic | Port + Adapter |
+
+---
+
+## WHAT NOT TO DO
+
+- ❌ Don't add CQRS to a project with 3 entities
+- ❌ Don't create Value Objects for every string — only when validation and immutability matter
+- ❌ Don't emit Domain Events for every property change — only for meaningful business moments
+- ❌ Don't put business logic in controllers or repositories
+- ❌ Don't import framework decorators inside `core/`
+- ❌ Don't share entities between bounded contexts — duplicate and translate
+- ❌ Don't create a Saga for a two-step process — a use case is enough

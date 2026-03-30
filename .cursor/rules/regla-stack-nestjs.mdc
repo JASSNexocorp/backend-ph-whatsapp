@@ -1,0 +1,526 @@
+---
+description: NestJS Stack Profesional — Herramientas, patrones y prácticas del proyecto
+globs: ['**/*.ts', '**/*.js']
+alwaysApply: true
+---
+
+# NESTJS — STACK PROFESIONAL
+
+## STACK TECNOLÓGICO
+
+### Base — siempre presente en el proyecto
+
+| Herramienta | Uso |
+|-------------|-----|
+| NestJS | Framework principal |
+| TypeScript | Lenguaje base |
+| TypeORM | ORM para base de datos |
+| PostgreSQL | Base de datos principal |
+| class-validator + class-transformer | Validación de DTOs |
+| JWT + Passport | Autenticación |
+| Swagger / OpenAPI | Documentación de la API |
+| Winston o Pino | Logging estructurado |
+| Helmet | Headers de seguridad HTTP |
+| @nestjs/throttler | Rate limiting |
+| @nestjs/config | Variables de entorno |
+
+### Opcional — según necesidades del proyecto
+
+| Herramienta | Cuándo usarla |
+|-------------|---------------|
+| Redis | Cuando el proyecto necesita caché |
+
+---
+
+## TYPEORM + POSTGRESQL
+
+### Modelo estándar
+
+```typescript
+// infraestructura/base-datos/esquemas/usuario.modelo.ts
+
+import {
+  Entity, Column, PrimaryGeneratedColumn,
+  CreateDateColumn, UpdateDateColumn, DeleteDateColumn, Index,
+} from 'typeorm';
+
+@Entity('usuarios')
+@Index(['correo'])
+export class UsuarioModelo {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ type: 'varchar', length: 255 })
+  nombre: string;
+
+  @Column({ type: 'varchar', length: 255, unique: true })
+  correo: string;
+
+  @Column({ type: 'varchar', length: 255, select: false })
+  password: string;
+
+  @Column({ type: 'boolean', default: true })
+  activo: boolean;
+
+  @CreateDateColumn({ name: 'created_at' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ name: 'updated_at' })
+  updatedAt: Date;
+
+  @DeleteDateColumn({ name: 'deleted_at', nullable: true })
+  deletedAt: Date | null;
+}
+```
+
+> `select: false` en password — no se expone en queries por defecto.
+> `@DeleteDateColumn` habilita soft delete automáticamente.
+> `synchronize: false` siempre — nunca true en producción.
+
+### Relaciones
+
+```typescript
+@ManyToOne(() => UsuarioModelo, { onDelete: 'CASCADE' })
+@JoinColumn({ name: 'usuario_id' })
+usuario: UsuarioModelo;
+
+@Column({ name: 'usuario_id' })
+usuarioId: string;
+```
+
+---
+
+## PREVENCIÓN N+1
+
+El problema N+1 ocurre cuando hacés 1 query para traer una lista y luego N queries más para traer datos relacionados de cada elemento. Con 100 usuarios son 101 queries innecesarias.
+
+```typescript
+// MAL — genera 1 + N queries
+const usuarios = await this.repo.find();
+for (const u of usuarios) {
+  u.posts = await this.postRepo.find({ where: { usuarioId: u.id } });
+}
+
+// BIEN — 1 sola query con JOIN
+const usuarios = await this.repo.find({
+  relations: ['posts'],
+});
+
+// BIEN — Query Builder para casos complejos
+const usuarios = await this.repo
+  .createQueryBuilder('usuario')
+  .leftJoinAndSelect('usuario.posts', 'posts')
+  .where('usuario.activo = :activo', { activo: true })
+  .getMany();
+```
+
+---
+
+## PAGINACIÓN — OBLIGATORIA EN LISTADOS
+
+Nunca retornar una lista sin paginar — puede traer millones de registros.
+
+```typescript
+// nucleo/casos-uso/usuario/listar-usuarios.caso-uso.ts
+
+export interface ListarUsuariosEntrada {
+  pagina: number;
+  limite: number;
+  ordenarPor?: string;
+  orden?: 'ASC' | 'DESC';
+}
+
+export interface ListarUsuariosSalida {
+  datos: Usuario[];
+  total: number;
+  pagina: number;
+  totalPaginas: number;
+}
+
+async ejecutar(entrada: ListarUsuariosEntrada): Promise<ListarUsuariosSalida> {
+  const limite = Math.min(entrada.limite, 100);
+  const offset = (entrada.pagina - 1) * limite;
+
+  const [datos, total] = await this.usuarioRepo.findAndCount({
+    skip: offset,
+    take: limite,
+    order: { [entrada.ordenarPor || 'createdAt']: entrada.orden || 'DESC' },
+  });
+
+  return {
+    datos,
+    total,
+    pagina: entrada.pagina,
+    totalPaginas: Math.ceil(total / limite),
+  };
+}
+```
+
+---
+
+## BULK OPERATIONS
+
+```typescript
+// MAL — 1000 usuarios = 1000 queries
+for (const usuario of usuarios) {
+  await this.repo.save(usuario);
+}
+
+// BIEN — 1 sola query
+await this.repo
+  .createQueryBuilder()
+  .insert()
+  .into(UsuarioModelo)
+  .values(usuarios.map(u => this.aModelo(u)))
+  .execute();
+```
+
+---
+
+## TRANSACCIONES
+
+Usar cuando múltiples operaciones deben ser atómicas — si una falla, todas fallan.
+
+```typescript
+async crearUsuarioConPerfil(usuario: Usuario, perfil: Perfil): Promise<void> {
+  const queryRunner = this.dataSource.createQueryRunner();
+  await queryRunner.connect();
+  await queryRunner.startTransaction();
+
+  try {
+    const guardado = await queryRunner.manager.save(UsuarioModelo, this.aModelo(usuario));
+    await queryRunner.manager.save(PerfilModelo, { ...perfil, usuarioId: guardado.id });
+    await queryRunner.commitTransaction();
+  } catch (error) {
+    await queryRunner.rollbackTransaction();
+    throw error;
+  } finally {
+    await queryRunner.release();
+  }
+}
+```
+
+---
+
+## SOFT DELETE
+
+Preferir soft delete para mantener auditoría — el registro no se borra físicamente.
+
+```typescript
+await this.repo.softDelete(id);   // Marcar como eliminado
+await this.repo.restore(id);      // Restaurar
+await this.repo.find({ withDeleted: true }); // Incluir eliminados en búsqueda
+```
+
+---
+
+## VALIDACIÓN — DTOs con class-validator
+
+```typescript
+// adaptadores/controladores/dtos/crear-usuario.dto.ts
+
+import { IsEmail, IsNotEmpty, IsString, MinLength, MaxLength, Matches } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+
+export class CrearUsuarioDto {
+  @ApiProperty({ example: 'Juan Pérez' })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
+  @MaxLength(255)
+  nombre: string;
+
+  @ApiProperty({ example: 'juan@example.com' })
+  @IsEmail()
+  @IsNotEmpty()
+  correo: string;
+
+  @ApiProperty({ example: 'Pass123!' })
+  @IsString()
+  @MinLength(8)
+  @Matches(/^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)/, {
+    message: 'La contraseña debe tener mayúsculas, minúsculas y números',
+  })
+  password: string;
+}
+```
+
+### Configuración global en main.ts
+
+```typescript
+app.useGlobalPipes(
+  new ValidationPipe({
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    transform: true,
+  }),
+);
+```
+
+---
+
+## AUTENTICACIÓN — JWT + Passport
+
+### Estrategia JWT
+
+```typescript
+// infraestructura/auth/estrategias/jwt.estrategia.ts
+
+@Injectable()
+export class JwtEstrategia extends PassportStrategy(Strategy) {
+  constructor(private configService: ConfigService) {
+    super({
+      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ignoreExpiration: false,
+      secretOrKey: configService.get('JWT_SECRET'),
+    });
+  }
+
+  async validate(payload: any) {
+    if (!payload.sub || !payload.correo) {
+      throw new UnauthorizedException('Token inválido');
+    }
+    return { id: payload.sub, correo: payload.correo, rol: payload.rol };
+  }
+}
+```
+
+### Uso en controlador
+
+```typescript
+@Get('perfil')
+@UseGuards(JwtAuthGuard)
+async obtenerPerfil(@Request() req) {
+  return req.user;
+}
+```
+
+---
+
+## SEGURIDAD
+
+### Rate limiting
+
+```typescript
+// Máximo 5 intentos de login por minuto
+@Post('login')
+@Throttle(5, 60)
+async login(@Body() dto: LoginDto) { ... }
+```
+
+### CORS
+
+```typescript
+app.enableCors({
+  origin: process.env.ALLOWED_ORIGINS?.split(',') || 'http://localhost:3000',
+  methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+  credentials: true,
+  allowedHeaders: 'Content-Type, Authorization',
+});
+```
+
+### SQL Injection — TypeORM protege automáticamente
+
+```typescript
+// SEGURO — TypeORM escapa el input
+await this.repo.findOne({ where: { correo: userInput } });
+
+// PELIGROSO — nunca concatenar strings en queries
+await this.repo.query(`SELECT * FROM usuarios WHERE correo = '${userInput}'`);
+```
+
+---
+
+## LOGGING — Winston
+
+```typescript
+// Uso en casos de uso o servicios
+private readonly logger = new Logger(CrearUsuarioCasoUso.name);
+
+async ejecutar(entrada: CrearUsuarioEntrada) {
+  this.logger.log(`Creando usuario: ${entrada.correo}`);
+  try {
+    // lógica
+    this.logger.log(`Usuario creado: ${usuario.id}`);
+  } catch (error) {
+    this.logger.error(`Error: ${error.message}`, error.stack);
+    throw error;
+  }
+}
+```
+
+---
+
+## SWAGGER
+
+```typescript
+// main.ts
+const config = new DocumentBuilder()
+  .setTitle('API del Proyecto')
+  .setVersion('1.0')
+  .addBearerAuth()
+  .build();
+
+SwaggerModule.setup('api/docs', app, SwaggerModule.createDocument(app, config));
+```
+
+```typescript
+// En controladores
+@ApiTags('usuarios')
+@ApiOperation({ summary: 'Crear nuevo usuario' })
+@ApiResponse({ status: 201, description: 'Usuario creado' })
+@ApiResponse({ status: 400, description: 'Datos inválidos' })
+```
+
+---
+
+## VARIABLES DE ENTORNO
+
+```bash
+# .env.development
+NODE_ENV=development
+PORT=3000
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=postgres
+DB_PASSWORD=postgres
+DB_NAME=mi_db
+JWT_SECRET=cambiar-en-produccion
+JWT_EXPIRATION=1d
+
+# Solo si el proyecto usa Redis
+REDIS_HOST=localhost
+REDIS_PORT=6379
+```
+
+### Validación de variables al arrancar
+
+```typescript
+ConfigModule.forRoot({
+  isGlobal: true,
+  envFilePath: `.env.${process.env.NODE_ENV || 'development'}`,
+  validationSchema: Joi.object({
+    NODE_ENV: Joi.string().valid('development', 'production', 'test').required(),
+    PORT: Joi.number().default(3000),
+    DB_HOST: Joi.string().required(),
+    DB_PORT: Joi.number().required(),
+    DB_USERNAME: Joi.string().required(),
+    DB_PASSWORD: Joi.string().required(),
+    DB_NAME: Joi.string().required(),
+    JWT_SECRET: Joi.string().required(),
+    REDIS_HOST: Joi.string().optional(),
+    REDIS_PORT: Joi.number().optional(),
+  }),
+});
+```
+
+---
+
+## MANEJO DE ERRORES
+
+### Excepciones de dominio
+
+```typescript
+// compartido/excepciones/dominio.excepcion.ts
+
+export class DominioExcepcion extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DominioExcepcion';
+  }
+}
+
+export class RecursoNoEncontradoExcepcion extends DominioExcepcion {
+  constructor(recurso: string, id: string) {
+    super(`${recurso} con ID ${id} no encontrado`);
+  }
+}
+```
+
+### Filtro global de errores
+
+```typescript
+// infraestructura/filtros/http-exception.filtro.ts
+
+@Catch()
+export class GlobalExceptionFilter implements ExceptionFilter {
+  catch(exception: unknown, host: ArgumentsHost) {
+    const ctx = host.switchToHttp();
+    const response = ctx.getResponse();
+    const request = ctx.getRequest();
+
+    let status = HttpStatus.INTERNAL_SERVER_ERROR;
+    let message = 'Error interno del servidor';
+
+    if (exception instanceof HttpException) {
+      status = exception.getStatus();
+      message = exception.message;
+    } else if (exception instanceof RecursoNoEncontradoExcepcion) {
+      status = HttpStatus.NOT_FOUND;
+      message = exception.message;
+    }
+
+    const esProduccion = process.env.NODE_ENV === 'production';
+
+    response.status(status).json({
+      exito: false,
+      mensaje: message,
+      timestamp: new Date().toISOString(),
+      path: request.url,
+      ...(esProduccion ? {} : { stack: exception instanceof Error ? exception.stack : undefined }),
+    });
+  }
+}
+```
+
+> Aplicar en main.ts: `app.useGlobalFilters(new GlobalExceptionFilter())`
+> En producción nunca exponer el stack trace — solo internamente en logs.
+
+---
+
+## PRINCIPIOS SOLID APLICADOS
+
+### Single Responsibility — cada clase hace una sola cosa
+
+```typescript
+// BIEN
+class CrearUsuarioCasoUso { }
+class ValidarEmailServicio { }
+class EncriptarPasswordServicio { }
+
+// MAL — una clase haciendo todo
+class UsuarioServicio {
+  crearUsuario() { }
+  validarEmail() { }
+  encriptarPassword() { }
+  enviarCorreo() { }
+}
+```
+
+### Dependency Inversion — depender de interfaces, no de implementaciones
+
+```typescript
+// BIEN — depende del puerto (interfaz)
+constructor(private readonly repo: UsuarioRepositorioPuerto) {}
+
+// MAL — depende de la implementación concreta
+constructor(private readonly repo: UsuarioRepositorioTypeORM) {}
+```
+
+### DRY — no repetir lógica común en controladores
+
+```typescript
+// BIEN — lógica de respuesta centralizada
+private async ejecutarCasoUso<T>(fn: () => Promise<T>) {
+  try {
+    return { exito: true, datos: await fn() };
+  } catch (error) {
+    throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
+  }
+}
+
+@Post()
+async crear(@Body() dto: CrearUsuarioDto) {
+  return this.ejecutarCasoUso(() => this.crearUsuario.ejecutar(dto));
+}
+```

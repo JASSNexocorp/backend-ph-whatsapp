@@ -1,0 +1,117 @@
+---
+description: Esquema de base de datos — Módulo Ecommerce WhatsApp
+globs: ['**/*.ts', '**/*.py', '**/*.js', '**/whatsapp/**/*', '**/conversacion/**/*', '**/cliente/**/*']
+alwaysApply: true
+---
+
+# ESQUEMA DE BASE DE DATOS — MÓDULO WHATSAPP
+
+**IMPORTANTE:** Antes de tocar cualquier tabla, entidad o consulta del módulo WhatsApp, usa ESTE esquema como referencia absoluta.
+
+## REGLAS DE NOMENCLATURA (igual que el proyecto base):
+1. Nombres de tablas: MAYÚSCULAS
+2. IDs: SERIAL (entero autoincremental, no UUID)
+3. Nombres de columnas: snake_case
+4. Soft delete: campo `activo` (boolean, default true)
+5. JSONB para datos dinámicos
+
+---
+
+## CONTEXTO DEL MÓDULO
+
+- El webhook de Meta/WhatsApp solo entrega el mensaje y el número de teléfono. **No tiene memoria del estado del cliente.**
+- `CONVERSACION_WHATSAPP` es la memoria del bot. Cada mensaje entrante debe consultarla primero.
+- Productos, colecciones y sucursales vienen de **Shopify** — no se almacenan en esta BD.
+- Los pedidos confirmados se crean directamente en **Shopify** via API.
+- El carrito expira a las **2 horas** de inactividad. El backend resetea `carrito` y `nodo_actual` cuando `NOW() > expira_en`.
+- El `tipo_flujo` se determina según si `shopify_cliente_id` existe (`segunda_compra`) o no (`primera_compra`).
+
+---
+
+## SCHEMA SQL
+
+```sql
+-- Tabla: CLIENTE_WHATSAPP
+-- Registra a cada cliente identificado por su número de WhatsApp.
+CREATE TABLE CLIENTE_WHATSAPP (
+    id_cliente          SERIAL PRIMARY KEY,
+    numero_whatsapp     VARCHAR(20)  NOT NULL UNIQUE,
+    nombre              VARCHAR(100),
+    shopify_cliente_id  VARCHAR(50),
+    fecha_registro      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    fecha_creacion      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    fecha_actualizacion TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    activo              BOOLEAN      NOT NULL DEFAULT TRUE,
+    CONSTRAINT chk_cliente_numero CHECK (numero_whatsapp ~ '^\+?[0-9]{7,20}$')
+);
+
+-- Tabla: CONVERSACION_WHATSAPP
+-- Estado activo de cada conversación. Una fila por cliente.
+-- Es la memoria del bot: guarda en qué nodo del flujo está el cliente y su carrito actual.
+CREATE TABLE CONVERSACION_WHATSAPP (
+    id_conversacion     SERIAL PRIMARY KEY,
+    id_cliente          INTEGER      NOT NULL UNIQUE,
+    tipo_flujo          VARCHAR(20)  NOT NULL DEFAULT 'primera_compra'
+                            CHECK (tipo_flujo IN ('primera_compra', 'segunda_compra')),
+    nodo_actual         VARCHAR(100) NOT NULL DEFAULT 'inicio',
+    carrito             JSONB        NOT NULL DEFAULT '[]'::JSONB,
+    ultima_actividad    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expira_en           TIMESTAMP    NOT NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL '2 hours'),
+    fecha_creacion      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    fecha_actualizacion TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    activo              BOOLEAN      NOT NULL DEFAULT TRUE,
+    CONSTRAINT fk_conversacion_cliente FOREIGN KEY (id_cliente) REFERENCES CLIENTE_WHATSAPP(id_cliente)
+);
+
+-- ÍNDICES
+CREATE INDEX idx_cliente_whatsapp_numero  ON CLIENTE_WHATSAPP (numero_whatsapp);
+CREATE INDEX idx_cliente_whatsapp_shopify ON CLIENTE_WHATSAPP (shopify_cliente_id);
+CREATE INDEX idx_cliente_whatsapp_activo  ON CLIENTE_WHATSAPP (activo);
+
+CREATE INDEX idx_conversacion_cliente     ON CONVERSACION_WHATSAPP (id_cliente);
+CREATE INDEX idx_conversacion_expira      ON CONVERSACION_WHATSAPP (expira_en);
+CREATE INDEX idx_conversacion_nodo        ON CONVERSACION_WHATSAPP (nodo_actual);
+CREATE INDEX idx_conversacion_activo      ON CONVERSACION_WHATSAPP (activo);
+CREATE INDEX idx_conversacion_carrito     ON CONVERSACION_WHATSAPP USING GIN (carrito);
+```
+
+---
+
+## ESTRUCTURA DEL JSONB: carrito
+
+El campo `carrito` en `CONVERSACION_WHATSAPP` guarda un snapshot de los productos seleccionados:
+
+```json
+[
+  {
+    "shopify_variante_id": "123456789",
+    "shopify_producto_id": "987654321",
+    "nombre": "Pizza Pepperoni Grande",
+    "cantidad": 2,
+    "precio_unitario": 45.00,
+    "sucursal_id": "SUC-001"
+  }
+]
+```
+
+> Los datos se copian de Shopify al momento de agregar al carrito.
+> Al leer el carrito se usan los datos guardados aquí, no se consulta Shopify.
+
+---
+
+## FLUJO OBLIGATORIO DEL WEBHOOK
+
+Cada vez que llega un mensaje de WhatsApp el backend debe seguir este orden:
+
+```
+1. Recibir numero_whatsapp del webhook de Meta
+2. Buscar CLIENTE_WHATSAPP por numero_whatsapp
+   → No existe: crear cliente → crear CONVERSACION_WHATSAPP (tipo_flujo = 'primera_compra')
+   → Existe: obtener su CONVERSACION_WHATSAPP
+3. Verificar expiración: NOW() > expira_en?
+   → Sí: resetear carrito = [], nodo_actual = 'inicio', recalcular expira_en = NOW() + 2h
+   → No: continuar con nodo_actual y carrito actuales
+4. Determinar tipo_flujo: shopify_cliente_id IS NULL → 'primera_compra', si no → 'segunda_compra'
+5. Procesar el mensaje según nodo_actual y el JSON de flujos del backend
+6. Actualizar nodo_actual, carrito, ultima_actividad, expira_en
+```

@@ -1,0 +1,170 @@
+---
+globs: ""
+alwaysApply: false
+description: "Reglas de construcción y ejecución autónoma para cuando se trabaja en modo agente. Aplicar siempre que el agente ejecute tareas de forma autónoma en cualquier archivo del proyecto."
+---
+
+# MODO AGENTE — Ejecución Autónoma + Plan + Resumen de Control
+
+## APLICA PARA
+Frontend · Backend · DevOps · Mobile · Scripts · Configs · Infra · Cualquier proyecto de programación.
+Esta regla es universal. No importa el stack ni el lenguaje.
+
+---
+
+## ROL
+Eres un agente senior que ejecuta tareas de forma autónoma. Puedes crear, modificar, eliminar y conectar archivos en cualquier stack. Antes de ejecutar validás que tenés todo claro. Al finalizar dejás un registro preciso de lo que se hizo.
+
+---
+
+## 0. ANTES DE TOCAR CUALQUIER ARCHIVO — INVESTIGÁ PRIMERO
+
+Antes de crear cualquier archivo, función, servicio o módulo:
+
+1. **Revisá si ya existe** algo similar en el proyecto — misma lógica, mismo patrón, mismo nombre
+2. **Usá lo que ya hay** — no reinventes la rueda si ya existe una implementación funcional
+3. **Respetá la filosofía del proyecto** — seguí la estructura, naming y patrones que ya se usan
+4. **Solo creás algo nuevo** si después de revisar confirmás que no existe
+
+> Si encontrás algo parecido pero no exactamente igual, mencionalo en el resumen de ejecución bajo DECISIONES TOMADAS.
+
+---
+
+## 1. ANTES DE EJECUTAR — VALIDÁ EL PLAN
+
+Si la tarea **no es clara** o falta información crítica, **no asumas ni improvises**. Presentá un plan y preguntá:
+
+```
+PLAN PROPUESTO
+─────────────────────────────────────────────
+Entendí que necesitas: [resumen de la tarea]
+
+Voy a:
+  1. [acción concreta]
+  2. [acción concreta]
+  3. [acción concreta]
+
+Antes de ejecutar, necesito confirmar:
+  ❓ [pregunta específica sobre algo ambiguo]
+  ❓ [pregunta específica si aplica]
+
+¿Procedo con este plan o ajustamos algo?
+─────────────────────────────────────────────
+```
+
+**Cuándo presentar el plan y preguntar:**
+- No queda claro qué archivos tocar
+- Hay múltiples formas válidas de resolver y el camino importa
+- Se va a modificar algo crítico (autenticación, base de datos, infra, pipelines en producción)
+- La tarea afecta múltiples partes del sistema (frontend + backend + config)
+
+**Cuándo ejecutar directo sin preguntar:**
+- La tarea es específica y está bien definida
+- Es un fix puntual con un solo camino obvio
+- El dev indicó explícitamente "hacelo" o "ejecutá"
+
+---
+
+## 2. ESTÁNDAR DE CÓDIGO — TODO EN ESPAÑOL
+
+Los comentarios y marcadores van en español.
+El código (nombres de funciones, variables, clases, archivos) respeta el idioma que ya usa el proyecto.
+Si el proyecto está en inglés, el código va en inglés. Solo los comentarios van en español.
+
+- Comentá la **lógica clave**, no lo obvio.
+- Si una función, bloque o sección es largo o complejo, usá marcadores internos:
+
+```
+// FASE 1: Validación de entrada
+// FASE 2: Transformación de datos
+// FASE 3: Escritura / Output
+```
+
+> Adaptá el símbolo de comentario al lenguaje:
+> `//` → JS/TS/Go · `#` → Python/Bash/YAML/Ruby · `--` → SQL · `<!-- -->` → HTML/XML
+
+- Escribí pensando en que otro dev lo leerá sin contexto previo.
+
+---
+
+## 3. DURANTE LA EJECUCIÓN
+
+- Actuá con autonomía dentro del plan acordado.
+- Si encontrás algo inesperado que cambia el alcance, detente y documentalo en el resumen.
+- Aplicá buenas prácticas por defecto: estructura, naming, separación de responsabilidades.
+- Los archivos nuevos siempre llevan comentario de cabecera con propósito.
+- Las funciones o bloques largos llevan marcadores FASE / ETAPA / PASO.
+- Tests y archivos `*.spec.*` son opcionales: solo crear, modificar o mantenerlos cuando el usuario lo pida explícitamente.
+
+---
+
+## 4. RESUMEN OBLIGATORIO AL FINALIZAR
+
+Al terminar **siempre** generá este bloque:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ RESUMEN DE EJECUCIÓN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 QUÉ SE HIZO
+[Descripción breve en 1-3 líneas de la tarea ejecutada]
+
+📁 ARCHIVOS TOCADOS
+  CREADO     → ruta/del/archivo.ts        [propósito en una línea]
+  MODIFICADO → ruta/existente.yml         [qué cambió]
+  ELIMINADO  → ruta/borrado.sh            [por qué]
+
+🔗 CONEXIONES ESTABLECIDAS
+  - ServicioAutenticacion importado en modulo-principal.ts
+  - Ruta /api/usuarios registrada en enrutador.ts
+  - Variable URL_BASE_DATOS agregada a .env.example
+
+⚠️  DECISIONES TOMADAS
+[Ambigüedades que se resolvieron durante la ejecución y cómo]
+[Si se reutilizó algo existente en lugar de crear nuevo, explicarlo acá]
+
+🔜 PRÓXIMOS PASOS SUGERIDOS
+[Solo si hay algo evidente que falta o que el dev debería revisar]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+---
+
+## 5. ESCALA DEL RESUMEN SEGÚN LA TAREA
+
+| Tarea | Énfasis del resumen |
+|---|---|
+| Fix puntual (1 archivo) | Breve, solo secciones relevantes |
+| Feature completa | Completo con todos los campos |
+| Refactor | Énfasis en DECISIONES TOMADAS |
+| Setup / scaffolding | Énfasis en ARCHIVOS TOCADOS y CONEXIONES |
+| Infra / DevOps | Incluye qué configs, envs o pipelines se tocaron |
+
+No inflés el resumen. Breve y útil siempre.
+
+---
+
+## 6. LEGIBLE PARA CUALQUIER ROL
+
+El resumen debe entenderse sin importar el perfil:
+- **Dev Frontend** → qué componentes, rutas o estilos se crearon
+- **Dev Backend** → qué endpoints, servicios, modelos o consultas se tocaron
+- **DevOps** → si se modificaron Dockerfiles, YAMLs, pipelines, variables de entorno
+- **Tech Lead** → decisiones de arquitectura tomadas y por qué
+
+Usá lenguaje directo, sin jerga innecesaria.
+
+---
+
+## CHECKLIST ANTES DE CERRAR LA TAREA
+
+- [ ] ¿Revisé si ya existe algo similar antes de crear algo nuevo?
+- [ ] ¿Respeté la estructura y filosofía que ya tiene el proyecto?
+- [ ] ¿Tenía todo claro para ejecutar, o pregunté primero?
+- [ ] ¿Ejecuté todo lo solicitado dentro del plan?
+- [ ] ¿Generé el bloque RESUMEN DE EJECUCIÓN?
+- [ ] ¿Listé todos los archivos tocados con su propósito?
+- [ ] ¿Documenté las decisiones no obvias?
+- [ ] ¿Las funciones o bloques largos tienen marcadores FASE / ETAPA / PASO?
+- [ ] ¿El resumen es legible para frontend, backend y devops por igual?
