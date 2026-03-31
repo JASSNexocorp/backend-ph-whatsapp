@@ -25,7 +25,7 @@ alwaysApply: true
 1. **Dependencies point INWARD** — outer layers depend on inner layers, never the reverse
 2. **The core is PURE** — no frameworks, no databases, no external libraries inside `core/`
 3. **One use case = One action = One file**
-4. **English for everything** — folders, files, variables, classes, interfaces
+4. **Un solo idioma para identificadores** — carpetas, archivos, variables, clases e interfaces: **inglés o español**, elegido **por proyecto** y aplicado **de forma consistente** (no mezclar en el mismo módulo sin decisión explícita). Los **comentarios** siguen la regla **modo Ask** (en este proyecto: español).
 5. **Each class has one reason to change** (Single Responsibility)
 
 ---
