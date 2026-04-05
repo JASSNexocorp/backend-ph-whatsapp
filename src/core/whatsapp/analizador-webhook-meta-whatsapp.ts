@@ -25,6 +25,12 @@ interface CuerpoWebhookMeta {
 
           type?: string;
           text?: { body?: string };
+
+          // Cuando el usuario toca un boton de tipo interactive
+          interactive?: { type?: string; button_reply?: { id?: string; title?: string; }; };
+
+          // Cuando el usuario comparte ubicacion
+          location?: { latitude?: number; longitude?: number; name?: string; address?: string; };
         }>;
       };
     }>;
@@ -87,15 +93,40 @@ export function extraerMensajesEntrantesNormalizados(
         if (!idMsg || !desde || !ts) {
           continue;
         }
+
         const tipo = aTipoMensajeEntrante(m.type);
+
+        // PASO 1 : Extraer texto si corresponde
         const textoPlano = tipo === 'texto' ? m.text?.body : undefined;
-        resultado.push({
-          idMensajeWhatsapp: idMsg,
-          numeroWhatsappOrigen: desde,
-          marcaTiempo: ts,
-          tipo,
-          textoPlano,
-        });
+
+        // PASO 2 : Extraer boton si corresponde (interactive/button reply)
+        const idBotonRespuesta = tipo === 'interactivo' ? m.interactive?.button_reply?.id : undefined;
+        const tituloBotonRespuesta = tipo === 'interactivo' ? m.interactive?.button_reply?.title : undefined;
+
+        // PASO 3 : Extraer ubicacion si corresponde (location)
+        const ubicacion = tipo === 'ubicacion' ? {
+          latitude: m.location?.latitude ?? NaN,
+          longitude: m.location?.longitude ?? NaN,
+          direccion: m.location?.address,
+          nombre: m.location?.name,
+        } :undefined;
+
+        // Validacion minima : si es ubicacion pero no hay lat/long, la ignoramos
+        const ubicacionValida = ubicacion && Number.isFinite(ubicacion.latitude) && Number.isFinite(ubicacion.longitude) ? ubicacion : undefined;
+
+        // PASO 4 : Si todo esta OK, agregar al resultado
+        if(textoPlano || idBotonRespuesta || ubicacionValida){
+          resultado.push({
+            idMensajeWhatsapp: idMsg,
+            numeroWhatsappOrigen: desde,
+            marcaTiempo: ts,
+            tipo,
+            textoPlano,
+            idBotonPresionado: idBotonRespuesta,
+            tituloBotonRespuesta,
+            ubicacion: ubicacionValida,
+          });
+        }
       }
     }
   }

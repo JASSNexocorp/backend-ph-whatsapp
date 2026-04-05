@@ -29,4 +29,16 @@ export interface MensajeEntranteWhatsappNormalizado {
 
     // Solo si el tipo es texto y existe cuerpo
     textoPlano?: string;
+
+    // Solo si el usuario presiono un boton (interactive/button reply)
+    idBotonPresionado?: string;
+    tituloBotonRespuesta?: string;
+
+    // Solo si el usuario comparte ubicacion
+    ubicacion?: {
+        latitude: number;
+        longitude: number;
+        direccion?: string;
+        nombre?: string;
+    };
 }

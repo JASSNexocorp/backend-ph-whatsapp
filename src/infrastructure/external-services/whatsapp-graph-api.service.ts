@@ -2,7 +2,7 @@ import { HttpService } from "@nestjs/axios";
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { firstValueFrom } from "rxjs";
-import { PuertoWhatsappGraphApi } from "src/core/ports/puerto-whatsapp-graph-api";
+import { PuertoWhatsappGraphApi } from "../../core/ports/puerto-whatsapp-graph-api";
 
 /**
  *  Implementacion HTTP del puerto usando WhatsApp Graph API de Meta

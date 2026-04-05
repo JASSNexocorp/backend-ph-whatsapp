@@ -1,7 +1,7 @@
 ---
 description: Esquema de base de datos — Módulo Ecommerce WhatsApp
 globs: ['**/*.ts', '**/*.py', '**/*.js', '**/whatsapp/**/*', '**/conversacion/**/*', '**/cliente/**/*']
-alwaysApply: true
+alwaysApply: false
 ---
 
 # ESQUEMA DE BASE DE DATOS — MÓDULO WHATSAPP

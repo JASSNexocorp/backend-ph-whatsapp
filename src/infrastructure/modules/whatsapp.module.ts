@@ -1,20 +1,25 @@
-import { Module } from "@nestjs/common";
+import { HttpModule } from '@nestjs/axios';
+import { Module } from '@nestjs/common';
 import { DatabaseModule } from "../database/database.module";
-import { WhatsAppWebhookController } from "src/adapters/controllers/whatsapp-webhook.controller";
-import { AdaptadorDeduplicacionMensajesMemoria } from "src/adapters/whatsapp/adaptador-deduplicacion-mensajes-memoria";
-import { AdaptadorManejadorMensajeEntranteRegistro } from "src/adapters/whatsapp/adaptador-manejador-mensaje-entrante-registro";
-import { ProcesarWebhookEntranteWhatsappCasoUso } from "src/core/use-cases/procesar-webhook-entrante-whatsapp.caso-uso";
 import { ConfigService } from "@nestjs/config";
 import { WhatsAppGraphApiService } from "../external-services/whatsapp-graph-api.service";
-import { EnviarBienvenidaYMenuCasoUso } from "src/core/use-cases/enviar-bienvenida-y-menu.caso-uso";
-import { AdaptadorManejadorMensajeEntranteBienvenida } from "src/adapters/whatsapp/adaptador-manejador-mensaje-entrante-bienvenida";
+import { WhatsAppWebhookController } from '../../adapters/controllers/whatsapp-webhook.controller';
+import { AdaptadorDeduplicacionMensajesMemoria } from '../../adapters/whatsapp/adaptador-deduplicacion-mensajes-memoria';
+import { AdaptadorManejadorMensajeEntranteFlujoDomicilio } from '../../adapters/whatsapp/adaptador-manejador-mensaje-entrante-flujo-domicilio';
+import { ProcesarWebhookEntranteWhatsappCasoUso } from '../../core/use-cases/procesar-webhook-entrante-whatsapp.caso-uso';
+import { ShopifyInformacionModule } from './shopify-informacion.modulo';
 
 /**
  * Modulo WhatsApp : WebHook + (mas adelante) cliente HTTP hacia Graph API para enviar mensajes
  * Separa el transporte Meta de nucleo de reglas de compra
 */
 @Module({
-    imports: [DatabaseModule],
+    imports: [
+        // HttpModule expone HttpService, requerido por WhatsAppGraphApiService.
+        HttpModule,
+        DatabaseModule,
+        ShopifyInformacionModule,
+    ],
     controllers: [WhatsAppWebhookController],
     providers: [
         // Infraestructura para enviar mensajes y marcar como leído.
@@ -23,19 +28,8 @@ import { AdaptadorManejadorMensajeEntranteBienvenida } from "src/adapters/whatsa
         // DeDuplicacion (MVP)
         AdaptadorDeduplicacionMensajesMemoria,
 
-        // Caso de uso de bienvenida.
-        {
-            provide: EnviarBienvenidaYMenuCasoUso,
-            useFactory: (config: ConfigService, whatsapp: WhatsAppGraphApiService) =>
-                new EnviarBienvenidaYMenuCasoUso(
-                    whatsapp,
-                    config.getOrThrow<string>('IMAGE_BANNER'),
-                ),
-            inject: [ConfigService, WhatsAppGraphApiService],
-        },
-
-        // Handler de mensajes entrantes: decide cuándo mandar bienvenida/menú.
-        AdaptadorManejadorMensajeEntranteBienvenida,
+        // Handler de flujo de compra (menú, tipo pedido, domicilio, etc.).
+        AdaptadorManejadorMensajeEntranteFlujoDomicilio,
 
         // Orquestador principal del webhook entrante.
         {
@@ -43,7 +37,7 @@ import { AdaptadorManejadorMensajeEntranteBienvenida } from "src/adapters/whatsa
             useFactory: (
                 config: ConfigService,
                 deduplicacion: AdaptadorDeduplicacionMensajesMemoria,
-                manejador: AdaptadorManejadorMensajeEntranteBienvenida,
+                manejador: AdaptadorManejadorMensajeEntranteFlujoDomicilio,
             ) =>
                 new ProcesarWebhookEntranteWhatsappCasoUso(
                     config.getOrThrow<string>('WHATSAPP_PHONE_NUMBER_ID'),
@@ -53,7 +47,7 @@ import { AdaptadorManejadorMensajeEntranteBienvenida } from "src/adapters/whatsa
             inject: [
                 ConfigService,
                 AdaptadorDeduplicacionMensajesMemoria,
-                AdaptadorManejadorMensajeEntranteBienvenida,
+                AdaptadorManejadorMensajeEntranteFlujoDomicilio,
             ],
         },
     ]
