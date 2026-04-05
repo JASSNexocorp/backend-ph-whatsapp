@@ -17,21 +17,22 @@ export class ShopifyAdminGraphqlService {
     ) { }
 
     /**
-     * Resuelve si tenemos credenciales suficientes para llamar a Admin API
-     * Si falta algo preferimos omitir enrichment antes que tirar el arranque del backend
+     * Resuelve si tenemos credenciales suficientes para llamar a Admin API.
+     * Usa get() y no getOrThrow: si falta Shopify el refresco del menu JSON no debe romperse entero.
      */
     private credencialesCompletas(): boolean {
-        const shop = this.config.getOrThrow<string>('SHOPIFY_SHOP_DOMAIN');
-        const token = this.config.getOrThrow<string>('SHOPIFY_ADMIN_ACCESS_TOKEN');
+        const shop = this.config.get<string>('SHOPIFY_SHOP_DOMAIN')?.trim() ?? '';
+        const token = this.config.get<string>('SHOPIFY_ADMIN_ACCESS_TOKEN')?.trim() ?? '';
         return Boolean(shop && token);
     }
 
     /**
-     * URL del endpoint GraphQL Admin segun tienda y version de API configurada
+     * URL del endpoint GraphQL Admin segun tienda y version de API configurada.
+     * Solo se llama si credencialesCompletas() ya devolvio true.
      */
     private urlGraphql(): string {
-        const shop = this.config.getOrThrow<string>('SHOPIFY_SHOP_DOMAIN');
-        const version = this.config.getOrThrow<string>('SHOPIFY_API_VERSION');
+        const shop = this.config.get<string>('SHOPIFY_SHOP_DOMAIN')!.trim();
+        const version = (this.config.get<string>('SHOPIFY_API_VERSION') ?? '2024-10').trim();
         return `https://${shop}/admin/api/${version}/graphql.json`;
     }
 
@@ -39,11 +40,21 @@ export class ShopifyAdminGraphqlService {
      * Headers estandar Admin API - Shopify documenta X-Shopify-Access-Token (no Bearer en Admin)
      */
     private headers(): Record<string, string> {
-        const token = this.config.getOrThrow<string>('SHOPIFY_ADMIN_ACCESS_TOKEN');
+        const token = this.config.get<string>('SHOPIFY_ADMIN_ACCESS_TOKEN')!.trim();
         return {
             'X-Shopify-Access-Token': token,
             'Content-Type': 'application/json',
-        }
+        };
+    }
+
+    /**
+     * Expone POST GraphQL para el servicio de catalogo (colecciones por titulo) sin duplicar URL ni token.
+     */
+    async ejecutarGraphqlAdmin<T>(
+        query: string,
+        variables?: Record<string, unknown>,
+    ): Promise<T | null> {
+        return this.postGraphql<T>(query, variables);
     }
 
     /**

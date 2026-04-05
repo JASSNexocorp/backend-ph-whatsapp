@@ -3,15 +3,15 @@
  * El core solo conoce el contrato no HttpService ni GraphQL
  */
 
-import { WhatsappMenuSnapshot } from "../whatsapp/informacion-tienda-whatsapp.types";
+import { WhatsappInformacionTiendaCache } from "../whatsapp/informacion-tienda-whatsapp.types";
 
 export const TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP = 'TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP';
 
 /**
- * Lectura de la informacion y sucursales en memoria tras la soncrnizacion WHATSAPP_INFORMACION_URL
- * EL webhook no debe hacer HTTP al JSON en cada mensajes : solo lee el snapshot
+ * Lectura de la informacion de tienda en cache (RAM) tras sincronizar WHATSAPP_MENU_URL.
+ * El webhook no debe hacer HTTP al JSON en cada mensaje: solo lee esta copia.
  */
 export interface PuertoInformacionTiendaWhatsapp {
-    // Ultimo snapshot bueno; null si nunca hubo fetch exitoso (arranque o URL caida)
-    obtenerSnapshotActual() : WhatsappMenuSnapshot | null;
+    /** Ultima copia buena en memoria; null si nunca hubo fetch exitoso (arranque o URL caida). */
+    obtenerInformacionTiendaEnCache(): WhatsappInformacionTiendaCache | null;
 }
