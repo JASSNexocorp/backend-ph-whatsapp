@@ -1,6 +1,12 @@
 /**
- * Puerto para enviar acciones/mensajes salientes por WhatsApp Graph API de Meta
- * Se modela como puerto para que el core no dependa de HTTP/Nest/Axios
+ * Token de inyección NestJS para el puerto de envío de mensajes de WhatsApp.
+ * Permite que los adaptadores dependan de la abstracción y no de la clase concreta de infraestructura.
+ */
+export const TOKEN_PUERTO_WHATSAPP_GRAPH_API = 'TOKEN_PUERTO_WHATSAPP_GRAPH_API';
+
+/**
+ * Puerto para enviar acciones/mensajes salientes por WhatsApp Graph API de Meta.
+ * Se modela como puerto para que el core no dependa de HTTP/Nest/Axios.
  */
 export interface PuertoWhatsappGraphApi {
     // Marca un mensaje entrante como leído usando el message_id (wamid) del webhook.
@@ -17,6 +23,9 @@ export interface PuertoWhatsappGraphApi {
     // Envía una imagen por URL (link) al número destino, con caption opcional.
     enviarImagenPorURL(numeroDestino: string, urlImagen: string, caption?: string): Promise<void>;
 
+    // Mensaje interactivo de Meta : cuerpo + boton para que el usuario envie su ubicacion
+    enviarSolicitudUbicacion(numeroDestino: string, textoCuerpo: string): Promise<void>;
+
     // Envía un menú con botones (interactive buttons) con body + footer.
     enviarMensajeBotones(
         numeroDestino: string,
@@ -26,5 +35,15 @@ export interface PuertoWhatsappGraphApi {
             id: string;
             texto: string;
         }>
+    ): Promise<void>;
+
+    // Envía un mensaje interactivo cta_url: un solo botón que abre una URL en el navegador del usuario.
+    // Útil para links de Google Maps o el catálogo web sin exponer la URL cruda en el cuerpo.
+    enviarMensajeCtaUrl(
+        numeroDestino: string,
+        body: string,
+        footer: string,
+        textoBoton: string,
+        urlBoton: string,
     ): Promise<void>;
 }

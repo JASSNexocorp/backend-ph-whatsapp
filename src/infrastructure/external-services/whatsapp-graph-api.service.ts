@@ -72,7 +72,7 @@ export class WhatsAppGraphApiService implements PuertoWhatsappGraphApi {
       )
     );
   }
-  
+
   async enviarTexto(numeroDestino: string, texto: string): Promise<void> {
     const url = `${this.baseUrl}/${this.versionApi}/${this.phoneNumberId}/messages`;
     await firstValueFrom(
@@ -142,5 +142,67 @@ export class WhatsAppGraphApiService implements PuertoWhatsappGraphApi {
         { headers: this.headers }
       )
     )
+  }
+
+  // Envía un mensaje interactivo de tipo cta_url: un botón que abre una URL externa.
+  // Meta no muestra la URL cruda en el cuerpo, solo el label del botón — mejor UX para links largos.
+  async enviarMensajeCtaUrl(
+    numeroDestino: string,
+    body: string,
+    footer: string,
+    textoBoton: string,
+    urlBoton: string,
+  ): Promise<void> {
+    const url = `${this.baseUrl}/${this.versionApi}/${this.phoneNumberId}/messages`;
+    await firstValueFrom(
+      this.http.post(
+        url,
+        {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: numeroDestino,
+          type: 'interactive',
+          interactive: {
+            type: 'cta_url',
+            body: { text: body },
+            // footer limita a 60 caracteres segun la doc de Meta.
+            footer: { text: footer },
+            action: {
+              name: 'cta_url',
+              parameters: {
+                display_text: textoBoton,
+                url: urlBoton,
+              },
+            },
+          },
+        },
+        { headers: this.headers },
+      ),
+    );
+  }
+
+  async enviarSolicitudUbicacion(numeroDestino: string, textoCuerpo: string): Promise<void> {
+    const url = `${this.baseUrl}/${this.versionApi}/${this.phoneNumberId}/messages`;
+    await firstValueFrom(
+      this.http.post(
+        url,
+        {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: numeroDestino,
+          type: 'interactive',
+          interactive: {
+            type: 'location_request_message',
+            body: {
+              text: textoCuerpo,
+            },
+            action: {
+              name: 'send_location',
+            },
+          },
+        },
+        { headers: this.headers },
+      ),
+    );
   }
 }

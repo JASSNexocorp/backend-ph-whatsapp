@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { DatabaseModule } from "../database/database.module";
 import { ConfigService } from "@nestjs/config";
 import { WhatsAppGraphApiService } from "../external-services/whatsapp-graph-api.service";
+import { TOKEN_PUERTO_WHATSAPP_GRAPH_API } from '../../core/ports/puerto-whatsapp-graph-api';
 import { WhatsAppWebhookController } from '../../adapters/controllers/whatsapp-webhook.controller';
 import { AdaptadorDeduplicacionMensajesMemoria } from '../../adapters/whatsapp/adaptador-deduplicacion-mensajes-memoria';
 import { AdaptadorManejadorMensajeEntranteFlujoDomicilio } from '../../adapters/whatsapp/adaptador-manejador-mensaje-entrante-flujo-domicilio';
@@ -10,9 +11,9 @@ import { ProcesarWebhookEntranteWhatsappCasoUso } from '../../core/use-cases/pro
 import { ShopifyInformacionModule } from './shopify-informacion.modulo';
 
 /**
- * Modulo WhatsApp : WebHook + (mas adelante) cliente HTTP hacia Graph API para enviar mensajes
- * Separa el transporte Meta de nucleo de reglas de compra
-*/
+ * Módulo WhatsApp: Webhook + cliente HTTP hacia Graph API para enviar mensajes.
+ * Separa el transporte Meta del núcleo de reglas de compra.
+ */
 @Module({
     imports: [
         // HttpModule expone HttpService, requerido por WhatsAppGraphApiService.
@@ -22,8 +23,14 @@ import { ShopifyInformacionModule } from './shopify-informacion.modulo';
     ],
     controllers: [WhatsAppWebhookController],
     providers: [
-        // Infraestructura para enviar mensajes y marcar como leído.
+        // Implementación concreta del puerto de envío de mensajes WhatsApp.
         WhatsAppGraphApiService,
+
+        // Alias del token del puerto para que los adaptadores dependan de la abstracción, no de la clase.
+        {
+            provide: TOKEN_PUERTO_WHATSAPP_GRAPH_API,
+            useExisting: WhatsAppGraphApiService,
+        },
 
         // DeDuplicacion (MVP)
         AdaptadorDeduplicacionMensajesMemoria,
