@@ -7,6 +7,7 @@ import { TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP } from "src/core/ports/puerto-
 import type { PuertoInformacionTiendaWhatsapp } from "src/core/ports/puerto-informacion-tienda.whatsapp";
 import { TOKEN_PUERTO_WHATSAPP_GRAPH_API } from "src/core/ports/puerto-whatsapp-graph-api";
 import type { PuertoWhatsappGraphApi } from "src/core/ports/puerto-whatsapp-graph-api";
+import { IDS_BOTONES_CARRITO_WEB } from "src/core/use-cases/notificar-carrito-web-whatsapp.caso-uso";
 import { MensajeEntranteWhatsappNormalizado } from "src/core/whatsapp/mensaje-entrante-whatsapp-normalizado";
 import { CoberturaDomicilioUtilidad, WhatsappSucursalConDistanciaKm } from "src/core/whatsapp/cobertura-domicilio.utilidad";
 import { WhatsappSucursalMenuItem, WhatsappTurnoSucursal } from "src/core/whatsapp/informacion-tienda-whatsapp.types";
@@ -80,6 +81,20 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         await this.whatsapp.marcarComoLeido(mensaje.idMensajeWhatsapp);
         this.idMensajeActual = mensaje.idMensajeWhatsapp;
 
+        // FASE 3.5: Botones del resumen de carrito enviado desde el menú web (confirmar / modificar / cancelar).
+        if (mensaje.tipo === 'interactivo' && mensaje.idBotonPresionado) {
+            const idBtn = mensaje.idBotonPresionado;
+            if (
+                idBtn === IDS_BOTONES_CARRITO_WEB.confirmar ||
+                idBtn === IDS_BOTONES_CARRITO_WEB.modificar ||
+                idBtn === IDS_BOTONES_CARRITO_WEB.cancelar
+            ) {
+                await this.manejarRespuestaCarritoWeb(mensaje, conversacion);
+                await this.repoConversacion.save(conversacion);
+                return;
+            }
+        }
+
         // FASE 4: Atajo global — si el usuario escribe "menu" lo volvemos al menú principal.
         if (mensaje.tipo === 'texto') {
             const texto = (mensaje.textoPlano ?? '').trim().toLowerCase();
@@ -129,6 +144,51 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         if (nodo === 'esperando_confirmacion_sucursal') {
             await this.manejarConfirmacionSucursalSinServicio(mensaje, conversacion);
             return;
+        }
+    }
+
+    // ─── RESUMEN CARRITO WEB (BOTONES) ───────────────────────────────────────────
+
+    /**
+     * Atiende los tres botones del mensaje interactivo disparado por POST /tienda/notificar-carrito.
+     * Cancelar vuelve al menú principal; Modificar reabre el enlace JWT; Confirmar solo acusa recibo.
+     */
+    private async manejarRespuestaCarritoWeb(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        const id = mensaje.idBotonPresionado;
+        const numero = mensaje.numeroWhatsappOrigen;
+
+        if (id === IDS_BOTONES_CARRITO_WEB.cancelar) {
+            await this.enviarMenuPrincipal(numero);
+            conversacion.nodoActual = 'menu_principal';
+            return;
+        }
+
+        if (id === IDS_BOTONES_CARRITO_WEB.modificar) {
+            const ctx = this.obtenerContextoMenuWebDelCarrito(conversacion.carrito as unknown[]);
+            if (ctx) {
+                await this.enviarEnlaceMenuConJwt(numero, ctx.nombreSucursal, ctx.tipoEntrega);
+                return;
+            }
+            const sucursalGuardada = this.obtenerSucursalGuardadaDelCarrito(conversacion.carrito as any[]);
+            if (sucursalGuardada) {
+                await this.enviarLinkCatalogo(numero, sucursalGuardada);
+                return;
+            }
+            await this.enviarTexto(
+                numero,
+                'No encontramos tu sesión del menú web. Escribí *menu* para empezar de nuevo.',
+            );
+            return;
+        }
+
+        if (id === IDS_BOTONES_CARRITO_WEB.confirmar) {
+            await this.enviarTexto(
+                numero,
+                '¡Listo! Registramos tu *confirmación*. En breve seguimos con el siguiente paso por aquí. 🍕',
+            );
         }
     }
 
@@ -665,11 +725,22 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         numeroDestino: string,
         sucursal: WhatsappSucursalConDistanciaKm,
     ): Promise<void> {
+        await this.enviarEnlaceMenuConJwt(numeroDestino, sucursal.nombre.trim(), 'domicilio');
+    }
+
+    /**
+     * Genera JWT de menú y envía el CTA "Nuestro Menú" (misma UX que el flujo de asignación de sucursal).
+     */
+    private async enviarEnlaceMenuConJwt(
+        numeroDestino: string,
+        nombreSucursal: string,
+        tipoEntrega: string,
+    ): Promise<void> {
         const cliente = await this.repoCliente.findOne({
             where: { numeroWhatsapp: numeroDestino },
         });
         if (!cliente) {
-            this.logger.warn(`enviarLinkCatalogo: sin cliente para ${numeroDestino}`);
+            this.logger.warn(`enviarEnlaceMenuConJwt: sin cliente para ${numeroDestino}`);
             await this.enviarTexto(
                 numeroDestino,
                 'No pudimos generar tu enlace al menú. Escribe *menu* para reintentar.',
@@ -681,8 +752,8 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         try {
             token = await this.menuClienteJwt.crearTokenMenuCliente({
                 clienteId: String(cliente.idCliente),
-                tipoEntrega: 'domicilio',
-                nombreSucursal: sucursal.nombre.trim(),
+                tipoEntrega: tipoEntrega.trim(),
+                nombreSucursal: nombreSucursal.trim(),
             });
         } catch (err) {
             this.logger.error(
@@ -774,6 +845,24 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         if (!Array.isArray(carrito)) return null;
         const item = carrito.find((x) => x?._contexto === 'sucursal_asignada');
         return item?.sucursal ?? null;
+    }
+
+    // Contexto guardado cuando el front llama a notificar-carrito: permite reemitir el JWT al tocar "Modificar".
+    private obtenerContextoMenuWebDelCarrito(
+        carrito: unknown[],
+    ): { nombreSucursal: string; tipoEntrega: string } | null {
+        if (!Array.isArray(carrito)) {
+            return null;
+        }
+        const item = carrito.find((x: any) => x?._contexto === 'menu_web_activo') as
+            | { nombreSucursal?: string; tipoEntrega?: string }
+            | undefined;
+        const nombre = item?.nombreSucursal?.trim() ?? '';
+        const tipo = item?.tipoEntrega?.trim() ?? '';
+        if (!nombre || !tipo) {
+            return null;
+        }
+        return { nombreSucursal: nombre, tipoEntrega: tipo };
     }
 
     // ─── HELPERS DE PERSISTENCIA ─────────────────────────────────────────────────

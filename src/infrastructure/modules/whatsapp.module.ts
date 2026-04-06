@@ -4,10 +4,13 @@ import { DatabaseModule } from "../database/database.module";
 import { ConfigService } from "@nestjs/config";
 import { WhatsAppGraphApiService } from "../external-services/whatsapp-graph-api.service";
 import { TOKEN_PUERTO_WHATSAPP_GRAPH_API } from '../../core/ports/puerto-whatsapp-graph-api';
+import { NotificarCarritoWebController } from '../../adapters/controllers/notificar-carrito-web.controller';
 import { WhatsAppWebhookController } from '../../adapters/controllers/whatsapp-webhook.controller';
 import { AdaptadorDeduplicacionMensajesMemoria } from '../../adapters/whatsapp/adaptador-deduplicacion-mensajes-memoria';
 import { AdaptadorManejadorMensajeEntranteFlujoDomicilio } from '../../adapters/whatsapp/adaptador-manejador-mensaje-entrante-flujo-domicilio';
+import { NotificarCarritoWebWhatsappCasoUso } from '../../core/use-cases/notificar-carrito-web-whatsapp.caso-uso';
 import { ProcesarWebhookEntranteWhatsappCasoUso } from '../../core/use-cases/procesar-webhook-entrante-whatsapp.caso-uso';
+import { NotificarCarritoWebWhatsappService } from '../whatsapp/notificar-carrito-web-whatsapp.service';
 import { ShopifyInformacionModule } from './shopify-informacion.modulo';
 
 /**
@@ -21,7 +24,7 @@ import { ShopifyInformacionModule } from './shopify-informacion.modulo';
         DatabaseModule,
         ShopifyInformacionModule,
     ],
-    controllers: [WhatsAppWebhookController],
+    controllers: [WhatsAppWebhookController, NotificarCarritoWebController],
     providers: [
         // Implementación concreta del puerto de envío de mensajes WhatsApp.
         WhatsAppGraphApiService,
@@ -31,6 +34,15 @@ import { ShopifyInformacionModule } from './shopify-informacion.modulo';
             provide: TOKEN_PUERTO_WHATSAPP_GRAPH_API,
             useExisting: WhatsAppGraphApiService,
         },
+
+        {
+            provide: NotificarCarritoWebWhatsappCasoUso,
+            useFactory: (api: WhatsAppGraphApiService) =>
+                new NotificarCarritoWebWhatsappCasoUso(api),
+            inject: [WhatsAppGraphApiService],
+        },
+
+        NotificarCarritoWebWhatsappService,
 
         // DeDuplicacion (MVP)
         AdaptadorDeduplicacionMensajesMemoria,
