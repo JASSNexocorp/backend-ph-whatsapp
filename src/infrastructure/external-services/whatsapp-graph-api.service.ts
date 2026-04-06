@@ -165,8 +165,8 @@ export class WhatsAppGraphApiService implements PuertoWhatsappGraphApi {
           interactive: {
             type: 'cta_url',
             body: { text: body },
-            // footer limita a 60 caracteres segun la doc de Meta.
-            footer: { text: footer },
+            // Meta admite CTA sin footer; si viene vacío no enviamos la clave.
+            ...(footer.trim() ? { footer: { text: footer } } : {}),
             action: {
               name: 'cta_url',
               parameters: {

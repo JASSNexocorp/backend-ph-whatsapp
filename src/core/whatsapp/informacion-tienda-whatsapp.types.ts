@@ -1,5 +1,5 @@
 /**
- * Tipos del JSON publico WHATSAPP_MENU_URL y de la informacion de tienda cacheada en RAM (flujo WhatsApp).
+ * Tipos del JSON publico WHATSAPP_WEBSCRAPING_URL y de la informacion de tienda cacheada en RAM (flujo WhatsApp).
  * Viven en core para que el puerto no dependa de infraestructura Nest/HTTP.
  */
 
@@ -37,7 +37,7 @@ export interface WhatsappConfiguracionCarrito {
 }
 
 /**
- * Raiz exacta del JSON devuelto por WHATSAPP_MENU_URL (solo titulo + imagen por coleccion; sin productos en origen).
+ * Raiz exacta del JSON devuelto por WHATSAPP_WEBSCRAPING_URL (solo titulo + imagen por coleccion; sin productos en origen).
  */
 export interface WhatsAppInformacionTienda {
     colecciones: WhatsappColeccionJsonItem[];

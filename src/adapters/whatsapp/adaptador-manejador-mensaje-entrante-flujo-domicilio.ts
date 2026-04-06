@@ -1,6 +1,7 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
+import { MenuClienteJwtService } from "src/infrastructure/auth/menu-cliente-jwt.service";
 import { PuertoManejadorMensajeEntrante } from "src/core/ports/puerto-manejador-mensaje-entrante";
 import { TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP } from "src/core/ports/puerto-informacion-tienda.whatsapp";
 import type { PuertoInformacionTiendaWhatsapp } from "src/core/ports/puerto-informacion-tienda.whatsapp";
@@ -27,14 +28,6 @@ const NOMBRES_DIAS: Record<number, string> = {
     7: 'Dom',
 };
 
-// Emoji representativo por servicio (coincidencia parcial, case-insensitive).
-const ICONOS_SERVICIO: Array<{ clave: string; icono: string; etiqueta: string }> = [
-    { clave: 'domicilio', icono: '🛵', etiqueta: 'Domicilio' },
-    { clave: 'retiro', icono: '🏪', etiqueta: 'Retiro en local' },
-    { clave: 'local', icono: '🏪', etiqueta: 'Retiro en local' },
-    { clave: 'salon', icono: '🍽️', etiqueta: 'Salón' },
-];
-
 type NodoConversacion =
     | 'inicio'
     | 'menu_principal'
@@ -55,6 +48,8 @@ type NodoConversacion =
 @Injectable()
 export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoManejadorMensajeEntrante {
 
+    private readonly logger = new Logger(AdaptadorManejadorMensajeEntranteFlujoDomicilio.name);
+
     // Almacena el ID del mensaje entrante actual para usarlo en el indicador de escritura.
     // Se reasigna al inicio de cada llamada a manejar(), antes de cualquier envío.
     private idMensajeActual: string = '';
@@ -65,6 +60,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         private readonly config: ConfigService,
         @Inject(TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP)
         private readonly tiendaInfo: PuertoInformacionTiendaWhatsapp,
+        private readonly menuClienteJwt: MenuClienteJwtService,
         @InjectRepository(WhatsAppClienteEntity)
         private readonly repoCliente: Repository<WhatsAppClienteEntity>,
         @InjectRepository(WhatsAppConversacionEntity)
@@ -398,8 +394,12 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             // El cliente acepta continuar aunque la sucursal no tenga domicilio habilitado.
             const sucursal = this.obtenerSucursalGuardadaDelCarrito(conversacion.carrito as any[]);
             if (sucursal) {
-                await this.enviarDetalleSucursalAsignada(mensaje.numeroWhatsappOrigen, sucursal);
-                await this.enviarLinkCatalogo(mensaje.numeroWhatsappOrigen);
+                await this.enviarResumenSucursalAsignada(
+                    mensaje.numeroWhatsappOrigen,
+                    sucursal,
+                    'continua_sin_domicilio',
+                );
+                await this.enviarLinkCatalogo(mensaje.numeroWhatsappOrigen, sucursal);
             } else {
                 // Caso defensivo: si no hay sucursal en carrito por algún motivo, reiniciamos búsqueda.
                 await this.iniciarAsignacionSucursal(mensaje.numeroWhatsappOrigen, conversacion);
@@ -441,11 +441,6 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         numeroDestino: string,
         conversacion: WhatsAppConversacionEntity,
     ): Promise<void> {
-        await this.enviarTexto(
-            numeroDestino,
-            '⏳ Dame un momento, te asignaremos la sucursal más cercana...',
-        );
-
         // Extraemos las coordenadas guardadas cuando el cliente compartió su ubicación.
         const coordenadas = this.obtenerUbicacionDelCarrito(conversacion.carrito as any[]);
 
@@ -488,9 +483,13 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         );
 
         if (tieneServicioDomicilio) {
-            // Flujo feliz: la sucursal sí tiene domicilio habilitado.
-            await this.enviarDetalleSucursalAsignada(numeroDestino, sucursalMasCercana);
-            await this.enviarLinkCatalogo(numeroDestino);
+            // Un solo texto con sucursal + validación + horarios; luego el CTA del menú.
+            await this.enviarResumenSucursalAsignada(
+                numeroDestino,
+                sucursalMasCercana,
+                'domicilio_validado',
+            );
+            await this.enviarLinkCatalogo(numeroDestino, sucursalMasCercana);
             return;
         }
 
@@ -592,12 +591,9 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
 
         const bloques = activas.map((sucursal) => {
             const horarios = this.formatearTurnos(sucursal.turnos);
-            const servicios = this.formatearServicios(sucursal.servicios);
             return [
                 `🏪 *${sucursal.nombre}*`,
                 `🕐 ${horarios}`,
-                `✅ ${servicios}`,
-                // URL en línea propia para que WhatsApp la detecte como hipervínculo clickeable.
                 sucursal.localizacion,
             ].join('\n');
         });
@@ -618,46 +614,81 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         );
     }
 
-    // Envía UN solo mensaje con la sucursal asignada: nombre, horarios y servicios consolidados.
-    // La CTA de Maps se omite aquí porque ya está disponible en el listado de Restaurantes.
-    private async enviarDetalleSucursalAsignada(
+    /**
+     * Un solo mensaje: sucursal asignada, validación frente al pedido (domicilio o excepción) y horarios (sin listar servicios).
+     */
+    private async enviarResumenSucursalAsignada(
         numeroDestino: string,
         sucursal: WhatsappSucursalConDistanciaKm,
+        variante: 'domicilio_validado' | 'continua_sin_domicilio',
     ): Promise<void> {
         const horarios = this.formatearTurnos(sucursal.turnos);
-        const servicios = this.formatearServicios(sucursal.servicios);
+
+        if (variante === 'domicilio_validado') {
+            await this.enviarTexto(
+                numeroDestino,
+                [
+                    `🎉 Te atenderá *${sucursal.nombre}*.`,
+                    'Confirmamos *servicio a domicilio* para tu pedido.',
+                    '',
+                    `🕐 *Horarios:* ${horarios}`,
+                ].join('\n'),
+            );
+            return;
+        }
 
         await this.enviarTexto(
             numeroDestino,
             [
-                '🎉 ¡Listo! La sucursal que te atenderá es:',
+                `⚠️ Te atenderá *${sucursal.nombre}*.`,
+                'Esta sucursal no tiene domicilio; acordaste continuar igual.',
                 '',
-                `🏪 *${sucursal.nombre}*`,
-                '',
-                `🕐 *Horarios:*`,
-                horarios,
-                '',
-                `✅ *Servicios:* ${servicios}`,
+                `🕐 *Horarios:* ${horarios}`,
             ].join('\n'),
         );
     }
 
-    // Envía el link al catálogo online como botón CTA URL para que el cliente explore el menú.
-    private async enviarLinkCatalogo(numeroDestino: string): Promise<void> {
-        const urlCatalogo = this.config.getOrThrow<string>('WHATSAPP_MENU_URL');
+    /**
+     * Abre URL_MENU_CLIENTE con query `token` (JWT: cliente, tipo entrega domicilio, sucursal).
+     */
+    private async enviarLinkCatalogo(
+        numeroDestino: string,
+        sucursal: WhatsappSucursalConDistanciaKm,
+    ): Promise<void> {
+        const cliente = await this.repoCliente.findOne({
+            where: { numeroWhatsapp: numeroDestino },
+        });
+        if (!cliente) {
+            this.logger.warn(`enviarLinkCatalogo: sin cliente para ${numeroDestino}`);
+            await this.enviarTexto(
+                numeroDestino,
+                'No pudimos generar tu enlace al menú. Escribe *menu* para reintentar.',
+            );
+            return;
+        }
 
-        await this.enviarCtaUrl(
-            numeroDestino,
-            [
-                '🍕 ¡Explora nuestro menú y elige tus combos favoritos al mejor precio!',
-                '',
-                'Toca el botón para ver todas nuestras opciones 👇🏼',
-            ].join('\n'),
-            // Footer limitado a 60 chars por la doc de Meta.
-            'Recuerda regresar a la conversación.',
-            'Nuestro Menú',
-            urlCatalogo,
-        );
+        let token: string;
+        try {
+            token = await this.menuClienteJwt.crearTokenMenuCliente({
+                clienteId: String(cliente.idCliente),
+                tipoEntrega: 'domicilio',
+                sucursalId: String(sucursal.id_ofisistema),
+            });
+        } catch (err) {
+            this.logger.error(
+                `Fallo al firmar JWT de menú: ${err instanceof Error ? err.message : err}`,
+            );
+            await this.enviarTexto(
+                numeroDestino,
+                'No pudimos generar tu enlace al menú en este momento. Escribe *menu* más tarde.',
+            );
+            return;
+        }
+
+        const base = this.config.getOrThrow<string>('URL_MENU_CLIENTE').trim().replace(/\/+$/, '');
+        const urlMenu = `${base}?token=${encodeURIComponent(token)}`;
+
+        await this.enviarCtaUrl(numeroDestino, '🍕', '', 'Abrir Menú', urlMenu);
     }
 
     // ─── HELPERS DE FORMATO ───────────────────────────────────────────────────────
@@ -702,20 +733,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
                 const ultimo = NOMBRES_DIAS[grupo[grupo.length - 1]!] ?? `D${grupo[grupo.length - 1]}`;
                 return `${primero} - ${ultimo}`;
             })
-            .join(', ');
-    }
-
-    // Convierte el array de servicios a texto en una sola línea con íconos representativos.
-    // Elimina duplicados que pueden surgir cuando dos claves coinciden con el mismo servicio.
-    private formatearServicios(servicios: string[]): string {
-        if (!servicios.length) return 'No especificados';
-
-        const etiquetas = servicios.map((servicio) => {
-            const match = ICONOS_SERVICIO.find((i) => servicio.toLowerCase().includes(i.clave));
-            return match ? `${match.icono} ${match.etiqueta}` : `• ${servicio}`;
-        });
-
-        return [...new Set(etiquetas)].join(' • ');
+            .join(' | ');
     }
 
     // ─── HELPERS DE CARRITO ───────────────────────────────────────────────────────

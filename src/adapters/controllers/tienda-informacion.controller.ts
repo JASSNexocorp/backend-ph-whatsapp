@@ -44,7 +44,7 @@ export class TiendaInformacionController {
         const informacion = this.informacionTienda.obtenerInformacionTiendaEnCache();
         if (!informacion) {
             throw new NotFoundException(
-                'Informacion de tienda no disponible aun; verifica WHATSAPP_MENU_URL y los logs de arranque.',
+                'Informacion de tienda no disponible aun; verifica WHATSAPP_WEBSCRAPING_URL y los logs de arranque.',
             );
         }
         return informacion;

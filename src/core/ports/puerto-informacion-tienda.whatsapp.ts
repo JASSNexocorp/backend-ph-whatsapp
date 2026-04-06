@@ -8,7 +8,7 @@ import { WhatsappInformacionTiendaCache } from "../whatsapp/informacion-tienda-w
 export const TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP = 'TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP';
 
 /**
- * Lectura de la informacion de tienda en cache (RAM) tras sincronizar WHATSAPP_MENU_URL.
+ * Lectura de la informacion de tienda en cache (RAM) tras sincronizar WHATSAPP_WEBSCRAPING_URL.
  * El webhook no debe hacer HTTP al JSON en cada mensaje: solo lee esta copia.
  */
 export interface PuertoInformacionTiendaWhatsapp {

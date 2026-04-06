@@ -16,7 +16,7 @@ import { ShopifyCatalogCollectionsService } from "./shopify-catalog-collections.
 
 
 /**
- * Sincroniza el JSON Tienda Pizza Hut con Shopify desde WHATSAPP_MENU_URL
+ * Sincroniza el JSON Tienda Pizza Hut con Shopify desde WHATSAPP_WEBSCRAPING_URL
  * Corre al iniciar y luego cada 30 minutos guardando en cache de memoria
  */
 @Injectable()
@@ -66,12 +66,12 @@ export class WebScrapingPhService
      * Si falla la red se conserva la cache anterior para no dejar el bot sin datos.
      */
     async refrescarInformacionTiendaEnCache(): Promise<void> {
-        const url = this.config.get<string>('WHATSAPP_MENU_URL');
+        const url = this.config.get<string>('WHATSAPP_WEBSCRAPING_URL');
         if (!url) {
-            this.logger.warn('WHATSAPP_MENU_URL no definida — no se actualiza el menu en memoria');
+            this.logger.warn('WHATSAPP_WEBSCRAPING_URL no definida — no se actualiza el menu en memoria');
             return;
         }
-        this.logger.log('Refrescando informacion tienda (GET WHATSAPP_MENU_URL + Shopify opcional)...');
+        this.logger.log('Refrescando informacion tienda (GET WHATSAPP_WEBSCRAPING_URL + Shopify opcional)...');
         try {
             const urlFetch = this.construirUrlFetchMenu(url);
             const headers = this.headersFetchMenuSinCache();
@@ -131,7 +131,7 @@ export class WebScrapingPhService
             );
         } catch (err) {
             const mensaje = err instanceof Error ? err.message : String(err);
-            this.logger.warn(`Fallo al refrescar WHATSAPP_MENU_URL: ${mensaje}`);
+            this.logger.warn(`Fallo al refrescar WHATSAPP_WEBSCRAPING_URL: ${mensaje}`);
         }
     }
 
@@ -200,7 +200,7 @@ export class WebScrapingPhService
         if (Number.isFinite(max) && max > 0 && texto.length > max) {
             texto = `${texto.slice(0, max)}\n... [truncado, total ${texto.length} chars; ajusta WHATSAPP_MENU_LOG_RAW_MAX_CHARS]`;
         }
-        this.logger.log(`WHATSAPP_MENU_URL respuesta cruda (${urlUsada}):\n${texto}`);
+        this.logger.log(`WHATSAPP_WEBSCRAPING_URL respuesta cruda (${urlUsada}):\n${texto}`);
     }
 
     /**
@@ -210,7 +210,7 @@ export class WebScrapingPhService
     private validarPayloadMenu(data: unknown): WhatsAppInformacionTienda | null {
         if (!data || typeof data !== 'object') {
             this.logger.warn(
-                'WHATSAPP_MENU_URL: respuesta no es un objeto JSON (revisa Content-Type y que la URL devuelva JSON).',
+                'WHATSAPP_WEBSCRAPING_URL: respuesta no es un objeto JSON (revisa Content-Type y que la URL devuelva JSON).',
             );
             return null;
         }
@@ -219,30 +219,30 @@ export class WebScrapingPhService
         if (!Array.isArray(o.colecciones)) {
             const pistaMenu = o.menu != null ? ' El payload trae "menu" (formato antiguo); hoy se espera raiz "colecciones".' : '';
             this.logger.warn(
-                `WHATSAPP_MENU_URL: "colecciones" debe ser un array. Claves en raiz: [${claves.join(', ')}].${pistaMenu}`,
+                `WHATSAPP_WEBSCRAPING_URL: "colecciones" debe ser un array. Claves en raiz: [${claves.join(', ')}].${pistaMenu}`,
             );
             return null;
         }
         for (let i = 0; i < o.colecciones.length; i++) {
             const item = o.colecciones[i];
             if (!item || typeof item !== 'object') {
-                this.logger.warn(`WHATSAPP_MENU_URL: colecciones[${i}] no es un objeto.`);
+                this.logger.warn(`WHATSAPP_WEBSCRAPING_URL: colecciones[${i}] no es un objeto.`);
                 return null;
             }
             const c = item as Record<string, unknown>;
             if (typeof c.titulo !== 'string' || typeof c.imagen !== 'string') {
                 this.logger.warn(
-                    `WHATSAPP_MENU_URL: colecciones[${i}] exige "titulo" e "imagen" como string (titulo=${typeof c.titulo}, imagen=${typeof c.imagen}).`,
+                    `WHATSAPP_WEBSCRAPING_URL: colecciones[${i}] exige "titulo" e "imagen" como string (titulo=${typeof c.titulo}, imagen=${typeof c.imagen}).`,
                 );
                 return null;
             }
         }
         if (!Array.isArray(o.sucursales)) {
-            this.logger.warn('WHATSAPP_MENU_URL: "sucursales" debe ser un array.');
+            this.logger.warn('WHATSAPP_WEBSCRAPING_URL: "sucursales" debe ser un array.');
             return null;
         }
         if (!o.configuracion_carrito || typeof o.configuracion_carrito !== 'object') {
-            this.logger.warn('WHATSAPP_MENU_URL: "configuracion_carrito" debe ser un objeto.');
+            this.logger.warn('WHATSAPP_WEBSCRAPING_URL: "configuracion_carrito" debe ser un objeto.');
             return null;
         }
         return data as WhatsAppInformacionTienda;
