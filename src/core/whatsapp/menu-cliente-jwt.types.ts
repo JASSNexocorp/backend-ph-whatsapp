@@ -9,8 +9,8 @@ export interface MenuClienteJwtPayload {
     sub: string;
     /** Tipo de entrega acordado en el flujo (ej. domicilio, retiro). */
     tipoEntrega: string;
-    /** Identificador de la sucursal elegida (según vuestro modelo de negocio). */
-    sucursalId: string;
+    /** Nombre visible de la sucursal asignada en el flujo WhatsApp. */
+    nombreSucursal: string;
     iat?: number;
     exp?: number;
 }
@@ -21,7 +21,7 @@ export type ValidarTokenMenuRespuesta =
           valido: true;
           clienteId: string;
           tipoEntrega: string;
-          sucursalId: string;
+          nombreSucursal: string;
           /** ISO 8601 desde claim `iat`. */
           emitidoEn: string | null;
           /** ISO 8601 desde claim `exp`. */

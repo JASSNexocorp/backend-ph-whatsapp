@@ -63,8 +63,6 @@ export interface WhatsappCatalogoProducto {
     obj_num: string;
     handle: string;
     nombre: string;
-    descripcion: string;
-    tags: string[];
     colecciones: string[];
     estado: boolean;
     precio: number;

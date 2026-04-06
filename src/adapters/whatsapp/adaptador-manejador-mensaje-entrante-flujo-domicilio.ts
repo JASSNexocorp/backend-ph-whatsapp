@@ -441,6 +441,11 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         numeroDestino: string,
         conversacion: WhatsAppConversacionEntity,
     ): Promise<void> {
+        await this.enviarTexto(
+            numeroDestino,
+            '⏳ Dame un momento, te asignaremos la sucursal más cercana...',
+        );
+
         // Extraemos las coordenadas guardadas cuando el cliente compartió su ubicación.
         const coordenadas = this.obtenerUbicacionDelCarrito(conversacion.carrito as any[]);
 
@@ -483,7 +488,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         );
 
         if (tieneServicioDomicilio) {
-            // Un solo texto con sucursal + validación + horarios; luego el CTA del menú.
+            // Mensaje de sucursal + horarios (formato clásico); luego CTA del menú con token JWT.
             await this.enviarResumenSucursalAsignada(
                 numeroDestino,
                 sucursalMasCercana,
@@ -615,7 +620,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
     }
 
     /**
-     * Un solo mensaje: sucursal asignada, validación frente al pedido (domicilio o excepción) y horarios (sin listar servicios).
+     * Texto de sucursal asignada: título "¡Listo!", nombre y bloque Horarios en líneas separadas (como en el flujo original).
      */
     private async enviarResumenSucursalAsignada(
         numeroDestino: string,
@@ -628,10 +633,12 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             await this.enviarTexto(
                 numeroDestino,
                 [
-                    `🎉 Te atenderá *${sucursal.nombre}*.`,
-                    'Confirmamos *servicio a domicilio* para tu pedido.',
+                    '🎉 ¡Listo! La sucursal que te atenderá es:',
                     '',
-                    `🕐 *Horarios:* ${horarios}`,
+                    `🏪 *${sucursal.nombre}*`,
+                    '',
+                    '🕐 *Horarios:*',
+                    horarios,
                 ].join('\n'),
             );
             return;
@@ -640,10 +647,13 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         await this.enviarTexto(
             numeroDestino,
             [
-                `⚠️ Te atenderá *${sucursal.nombre}*.`,
+                '⚠️ Seguimos con tu pedido.',
+                '',
+                `🏪 *${sucursal.nombre}*`,
                 'Esta sucursal no tiene domicilio; acordaste continuar igual.',
                 '',
-                `🕐 *Horarios:* ${horarios}`,
+                '🕐 *Horarios:*',
+                horarios,
             ].join('\n'),
         );
     }
@@ -672,7 +682,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             token = await this.menuClienteJwt.crearTokenMenuCliente({
                 clienteId: String(cliente.idCliente),
                 tipoEntrega: 'domicilio',
-                sucursalId: String(sucursal.id_ofisistema),
+                nombreSucursal: sucursal.nombre.trim(),
             });
         } catch (err) {
             this.logger.error(
@@ -688,7 +698,17 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         const base = this.config.getOrThrow<string>('URL_MENU_CLIENTE').trim().replace(/\/+$/, '');
         const urlMenu = `${base}?token=${encodeURIComponent(token)}`;
 
-        await this.enviarCtaUrl(numeroDestino, '🍕', '', 'Abrir Menú', urlMenu);
+        await this.enviarCtaUrl(
+            numeroDestino,
+            [
+                '🍕 ¡Explora nuestro menú y elige tus combos favoritos al mejor precio!',
+                '',
+                'Toca el botón para ver todas nuestras opciones 👇🏼',
+            ].join('\n'),
+            'Recuerda regresar a la conversación.',
+            'Nuestro Menú',
+            urlMenu,
+        );
     }
 
     // ─── HELPERS DE FORMATO ───────────────────────────────────────────────────────

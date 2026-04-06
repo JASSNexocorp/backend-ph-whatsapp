@@ -17,8 +17,6 @@ const FRAGMENTO_NODO_PRODUCTO = `
   id
   handle
   title
-  description
-  tags
   totalInventory
   collections(first: 5) {
     edges { node { title } }
@@ -257,8 +255,6 @@ export class ShopifyCatalogCollectionsService {
             obj_num: '',
             handle,
             nombre: String(producto.title ?? ''),
-            descripcion: String(producto.description ?? ''),
-            tags,
             colecciones: nombresCols,
             estado: Boolean(v0.availableForSale),
             precio: Number.isNaN(precio) ? 0 : precio,

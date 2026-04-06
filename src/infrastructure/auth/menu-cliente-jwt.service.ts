@@ -13,7 +13,7 @@ export class MenuClienteJwtService {
     constructor(private readonly jwt: JwtService) {}
 
     /**
-     * Verifica firma y expiración; exige `sub`, `tipoEntrega` y `sucursalId` en el payload.
+     * Verifica firma y expiración; exige `sub`, `tipoEntrega` y `nombreSucursal` en el payload.
      */
     async validarTokenMenu(token: string): Promise<ValidarTokenMenuRespuesta> {
         const texto = token?.trim() ?? '';
@@ -29,14 +29,14 @@ export class MenuClienteJwtService {
             const decoded = await this.jwt.verifyAsync<MenuClienteJwtPayload>(texto);
             const clienteId = decoded.sub?.trim();
             const tipoEntrega = decoded.tipoEntrega?.trim();
-            const sucursalId = decoded.sucursalId?.trim();
+            const nombreSucursal = decoded.nombreSucursal?.trim();
 
-            if (!clienteId || !tipoEntrega || !sucursalId) {
+            if (!clienteId || !tipoEntrega || !nombreSucursal) {
                 return {
                     valido: false,
                     motivo: 'TOKEN_INCOMPLETO',
                     detalle:
-                        'El token no incluye sub (cliente), tipoEntrega o sucursalId.',
+                        'El token no incluye sub (cliente), tipoEntrega o nombreSucursal.',
                 };
             }
 
@@ -53,7 +53,7 @@ export class MenuClienteJwtService {
                 valido: true,
                 clienteId,
                 tipoEntrega,
-                sucursalId,
+                nombreSucursal,
                 emitidoEn,
                 expiraEn,
             };
@@ -83,12 +83,12 @@ export class MenuClienteJwtService {
     async crearTokenMenuCliente(payload: {
         clienteId: string;
         tipoEntrega: string;
-        sucursalId: string;
+        nombreSucursal: string;
     }): Promise<string> {
         return this.jwt.signAsync({
             sub: payload.clienteId,
             tipoEntrega: payload.tipoEntrega,
-            sucursalId: payload.sucursalId,
+            nombreSucursal: payload.nombreSucursal,
         });
     }
 }

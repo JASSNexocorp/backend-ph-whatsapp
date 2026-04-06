@@ -196,8 +196,6 @@ export class ShopifyProductByTitleService {
             obj_num: objNum,
             handle,
             nombre: String(nodo.title ?? ''),
-            descripcion: String(nodo.description ?? ''),
-            tags,
             colecciones: nombresCols,
             estado: Boolean(v0.availableForSale),
             precio: Number.isNaN(precio) ? 0 : precio,
