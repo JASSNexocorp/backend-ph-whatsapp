@@ -1,11 +1,13 @@
 import {
     BadRequestException,
+    Body,
     Controller,
     Get,
     HttpCode,
     HttpStatus,
     Inject,
     NotFoundException,
+    Post,
     Query,
 } from '@nestjs/common';
 import { TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP } from 'src/core/ports/puerto-informacion-tienda.whatsapp';
@@ -14,6 +16,9 @@ import type {
     WhatsappInformacionTiendaCache,
     WhatsappProductoDetalleTienda,
 } from 'src/core/whatsapp/informacion-tienda-whatsapp.types';
+import type { ValidarTokenMenuRespuesta } from 'src/core/whatsapp/menu-cliente-jwt.types';
+import { ValidarTokenMenuDto } from 'src/adapters/controllers/dtos/validar-token-menu.dto';
+import { MenuClienteJwtService } from 'src/infrastructure/auth/menu-cliente-jwt.service';
 import { ShopifyProductByTitleService } from 'src/infrastructure/shopify/shopify-product-by-title.service';
 
 /**
@@ -26,6 +31,7 @@ export class TiendaInformacionController {
         @Inject(TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP)
         private readonly informacionTienda: PuertoInformacionTiendaWhatsapp,
         private readonly productoPorTitulo: ShopifyProductByTitleService,
+        private readonly menuClienteJwt: MenuClienteJwtService,
     ) {}
 
     /**
@@ -62,5 +68,16 @@ export class TiendaInformacionController {
             throw new NotFoundException(`No se encontro producto para: ${termino}`);
         }
         return producto;
+    }
+
+    /**
+     * Valida el JWT del menú web y devuelve cliente, tipo de entrega y sucursal, o motivo de fallo.
+     */
+    @Post('validar-token')
+    @HttpCode(HttpStatus.OK)
+    async validarTokenMenu(
+        @Body() dto: ValidarTokenMenuDto,
+    ): Promise<ValidarTokenMenuRespuesta> {
+        return this.menuClienteJwt.validarTokenMenu(dto.token);
     }
 }
