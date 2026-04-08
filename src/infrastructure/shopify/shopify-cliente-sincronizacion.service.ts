@@ -1,5 +1,6 @@
 
 import { Injectable, Logger } from "@nestjs/common";
+import { generarIdentidadShopifyWhatsappClienteNuevo } from "src/core/whatsapp/shopify-cliente-identidad-whatsapp";
 import { ShopifyAdminGraphqlService } from "../shopify/shopify-admin-graphql.service";
 import { WhatsAppClienteEntity } from "../database/schemas/cliente-whatsapp.entity";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -46,49 +47,6 @@ function normalizarTelefonoE164Bolivia(numeroWhatsapp: string): string {
     return soloDigitos ? `+${soloDigitos}` : '';
 }
 
-/**
- * Dominio fijo solo para cumplir formato email en Shopify (no es buzon real).
- * La unicidad va en el local-part: tmp.phbo + fecha + hora + aleatorio en America/La_Paz.
- */
-const DOMINIO_FIJO_EMAIL_SINTETICO_SHOPIFY = 'phbo.whatsapp.sync';
-
-/**
- * Email unico (tmp.phbo.fecha.hora.aleatorio) y nombre/apellido sinteticos tmp_phbo.
- * El unico dato real del cliente aqui es el telefono: va en `phone` y en lastName para verlo en Admin.
- */
-function generarEmailYNombrePlaceholderShopify(soloDigitosTelefono: string): {
-    email: string;
-    firstName: string;
-    lastName: string;
-} {
-    const ahora = new Date();
-    const zona = 'America/La_Paz';
-    const fecha = new Intl.DateTimeFormat('en-CA', {
-        timeZone: zona,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-    }).format(ahora);
-    const hora = new Intl.DateTimeFormat('en-GB', {
-        timeZone: zona,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-    }).format(ahora);
-    const [y, m, d] = fecha.split('-');
-    const horaConPuntos = hora.replace(/:/g, '.');
-    const sufijoMs = String(ahora.getTime()).slice(-6);
-    const aleatorio = Math.random().toString(36).slice(2, 10);
-    const localPart = `tmp.phbo.${y}.${m}.${d}.${horaConPuntos}.${sufijoMs}.${aleatorio}`;
-    const digitos = soloDigitosTelefono.replace(/\D/g, '') || '0';
-    return {
-        email: `${localPart}@${DOMINIO_FIJO_EMAIL_SINTETICO_SHOPIFY}`,
-        firstName: 'tmp_phbo',
-        lastName: `tmp_phbo_${digitos}`,
-    };
-}
-
 
 @Injectable()
 export class ShopifyClienteSincronizacionService {
@@ -103,7 +61,7 @@ export class ShopifyClienteSincronizacionService {
 
     /**
      * Si el cliente aún no tiene shopifyClienteId: busca en Shopify por teléfono o crea el cliente.
-     * Fallas de red/API: se registran y no se bloquea el flujo WhatsApp.
+     * Solo en alta nueva se aplica identidad pizzahut + fecha/hora + @gmail.com; si ya existe en Shopify solo se enlaza.
      */
     async enlazarOCrearClienteShopifySiHaceFalta(cliente: WhatsAppClienteEntity): Promise<void> {
         if (cliente.shopifyClienteId) {
@@ -117,14 +75,14 @@ export class ShopifyClienteSincronizacionService {
             this.logger.warn(`Shopify sync: número inválido para cliente ${cliente.idCliente}`);
             return;
         }
-        const encontrado = await this.buscarCustomerIdPorTelefonoExacto(phoneE164);
+        const encontrado = await this.buscarClientePorTelefonoExacto(phoneE164);
         if (encontrado) {
-            cliente.shopifyClienteId = encontrado;
+            cliente.shopifyClienteId = encontrado.idNumerico;
             await this.repoCliente.save(cliente);
-            this.logger.log(`Shopify sync: enlazado cliente local ${cliente.idCliente} → ${encontrado}`);
+            this.logger.log(`Shopify sync: enlazado cliente local ${cliente.idCliente} → ${encontrado.idNumerico}`);
             return;
         }
-        const creado = await this.crearClienteShopifyMinimo(phoneE164, cliente);
+        const creado = await this.crearClienteShopifyMinimo(phoneE164);
         if (creado) {
             cliente.shopifyClienteId = creado;
             await this.repoCliente.save(cliente);
@@ -132,7 +90,9 @@ export class ShopifyClienteSincronizacionService {
         }
     }
 
-    private async buscarCustomerIdPorTelefonoExacto(phoneE164: string): Promise<string | null> {
+    private async buscarClientePorTelefonoExacto(
+        phoneE164: string,
+    ): Promise<{ idNumerico: string; gid: string } | null> {
         const query = `
           query CustomersByPhone($q: String!) {
             customers(first: 25, query: $q) {
@@ -155,16 +115,18 @@ export class ShopifyClienteSincronizacionService {
         const nodes = raw.data?.customers?.nodes ?? [];
         for (const n of nodes) {
             const p = (n.phone ?? '').trim() || (n.defaultPhoneNumber?.phoneNumber ?? '').trim();
-            if (p === phoneE164) {
-                return extraerIdNumericoCustomerGid(n.id ?? '');
+            if (p === phoneE164 && n.id) {
+                return {
+                    gid: n.id,
+                    idNumerico: extraerIdNumericoCustomerGid(n.id),
+                };
             }
         }
         return null;
     }
 
-    private async crearClienteShopifyMinimo(phoneE164: string, _cliente: WhatsAppClienteEntity): Promise<string | null> {
-        const soloDigitos = phoneE164.replace(/\D/g, '');
-        const { email, firstName, lastName } = generarEmailYNombrePlaceholderShopify(soloDigitos);
+    private async crearClienteShopifyMinimo(phoneE164: string): Promise<string | null> {
+        const { email, firstName, lastName } = generarIdentidadShopifyWhatsappClienteNuevo();
         const mutation = `
           mutation CreateCustomer($input: CustomerInput!) {
             customerCreate(input: $input) {
