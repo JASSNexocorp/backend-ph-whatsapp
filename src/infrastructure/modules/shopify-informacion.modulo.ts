@@ -50,6 +50,7 @@ import { WebScrapingPhService } from '../shopify/web-scraping-ph.service';
         TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP,
         WebScrapingPhService,
         MenuClienteJwtService,
+        ShopifyAdminGraphqlService,
     ],
 })
 export class ShopifyInformacionModule {}

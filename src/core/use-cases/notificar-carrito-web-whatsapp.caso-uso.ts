@@ -31,90 +31,109 @@ export interface NotificarCarritoWebWhatsappEntrada {
 const LIMITE_CUERPO_META = 1024;
 
 /**
- * Traduce el claim del JWT a texto amigable en el cuerpo del mensaje.
+ * Traduce el claim del JWT a texto corto (sin palabras técnicas tipo "sucursal").
  */
 function etiquetaTipoEntrega(raw: string): string {
     const t = raw.trim().toLowerCase();
     if (t === 'domicilio') {
-        return 'A domicilio';
+        return 'Entrega a domicilio';
     }
     if (t === 'retiro' || t === 'retiro_local') {
-        return 'Retiro en local';
+        return 'Retiro en restaurante';
     }
     return raw.trim() || '—';
 }
 
 /**
- * Construye el cuerpo del interactivo respetando el tope de caracteres de Meta.
+ * Lista solo lo elegido (nombreOpcion), en el mismo orden que manda el front.
+ * No se muestra tituloSeccion ("Ingredientes extra", "Tamaño", etc.).
+ */
+function listaSoloElecciones(
+    opciones: Array<{ tituloSeccion: string; nombreOpcion: string }>,
+): string[] {
+    const lineas: string[] = [];
+    for (const o of opciones ?? []) {
+        const valor = (o.nombreOpcion ?? '').trim();
+        if (!valor) {
+            continue;
+        }
+        lineas.push(`_${valor}_`);
+    }
+    return lineas;
+}
+
+/**
+ * Ítem: producto en negrita; debajo, una línea por cada elección (solo texto elegido).
+ */
+function formatearLineaPedido(linea: LineaCarritoNotificacionEntrada): string {
+    const titulo = `*${linea.cantidad}× ${linea.nombre}*`;
+    const detalles = listaSoloElecciones(linea.opciones ?? []);
+    if (detalles.length === 0) {
+        return titulo;
+    }
+    return [titulo, ...detalles].join('\n');
+}
+
+function armarCabeceraResumen(e: NotificarCarritoWebWhatsappEntrada): string {
+    return [
+        '🍕 *Resumen de tu pedido*',
+        '',
+        `🏪 _${e.nombreSucursal}_`,
+        `📦 _${etiquetaTipoEntrega(e.tipoEntrega)}_`,
+        '',
+    ].join('\n');
+}
+
+function armarBloqueMontos(e: NotificarCarritoWebWhatsappEntrada): string {
+    const lineas: string[] = [`_Subtotal: ${e.subtotalProductos}_`];
+    // No mostramos subtotalComparacion en WhatsApp: confunde frente al subtotal/total del pedido.
+    if (e.costoEnvio > 0) {
+        lineas.push(`_Envío: ${e.costoEnvio}_`);
+    }
+    lineas.push(`*Total: ${e.total}*`);
+    return lineas.join('\n');
+}
+
+/**
+ * Construye el cuerpo del interactivo respetando el tope de caracteres de Meta (un solo mensaje + 3 botones).
  */
 export function formatearCuerpoResumenCarritoWhatsapp(
     e: NotificarCarritoWebWhatsappEntrada,
 ): string {
+    const bloqueMontos = armarBloqueMontos(e);
+    // Sin texto extra al pie del cuerpo: los botones ya indican la acción (negocio pidió quitar "cómo continuar").
+    const pie = `\n${bloqueMontos}`;
+
     const lineasDetalle: string[] = [];
     for (const linea of e.lineas) {
-        const partesOpciones = linea.opciones.map(
-            (o) => `${o.tituloSeccion}: ${o.nombreOpcion}`,
-        );
-        const sufijo =
-            partesOpciones.length > 0 ? `\n   ${partesOpciones.join(' · ')}` : '';
-        lineasDetalle.push(`• ${linea.cantidad}× *${linea.nombre}*${sufijo}`);
+        lineasDetalle.push(formatearLineaPedido(linea));
     }
 
-    const bloqueMontos: string[] = [
-        `Subtotal productos: *${e.subtotalProductos}*`,
-    ];
-    if (
-        e.subtotalComparacion != null &&
-        e.subtotalComparacion > 0 &&
-        e.subtotalComparacion !== e.subtotalProductos
-    ) {
-        bloqueMontos.push(`Referencia: ${e.subtotalComparacion}`);
-    }
-    if (e.costoEnvio > 0) {
-        bloqueMontos.push(`Envío: *${e.costoEnvio}*`);
-    }
-    bloqueMontos.push(`*Total: ${e.total}*`);
+    // Entre productos: línea en blanco (más aire, sin barras decorativas).
+    const cuerpoItems = lineasDetalle.join('\n\n');
 
-    const armarCuerpo = (detalleLineas: string[]): string =>
-        [
-            '🛒 *Tu pedido desde el menú web*',
-            '',
-            `🏪 Sucursal: *${e.nombreSucursal}*`,
-            `📦 ${etiquetaTipoEntrega(e.tipoEntrega)}`,
-            '',
-            ...detalleLineas,
-            '',
-            bloqueMontos.join('\n'),
-            '',
-            '¿Qué querés hacer?',
-        ].join('\n');
+    const armarCuerpo = (bloqueItems: string): string =>
+        [armarCabeceraResumen(e), bloqueItems, pie].join('\n');
 
-    let cuerpo = armarCuerpo(lineasDetalle);
+    let cuerpo = armarCuerpo(cuerpoItems);
     if (cuerpo.length <= LIMITE_CUERPO_META) {
         return cuerpo;
     }
 
-    // Si excede el límite, recortamos líneas desde el final y dejamos el total visible.
-    const pie = ['', bloqueMontos.join('\n'), '', '¿Qué querés hacer?'].join('\n');
-    const cabecera = [
-        '🛒 *Tu pedido desde el menú web*',
-        '',
-        `🏪 Sucursal: *${e.nombreSucursal}*`,
-        `📦 ${etiquetaTipoEntrega(e.tipoEntrega)}`,
-        '',
-    ].join('\n');
-
-    const truncado = '_(Hay más productos; el total abajo incluye todo el carrito.)_';
-    let usadas = [...lineasDetalle];
-    while (usadas.length > 0) {
-        const intento = `${cabecera}${usadas.join('\n')}\n${truncado}${pie}`;
+    // Si excede el límite, quitamos productos desde el final hasta caber; el total siempre visible.
+    const cabecera = armarCabeceraResumen(e);
+    const truncado = '\n_(Incluye más productos; el total es el monto completo de tu pedido.)_\n';
+    let items = [...lineasDetalle];
+    while (items.length > 0) {
+        const bloque = items.join('\n\n');
+        const intento = `${cabecera}${bloque}${truncado}\n${bloqueMontos}`;
         if (intento.length <= LIMITE_CUERPO_META) {
             return intento;
         }
-        usadas = usadas.slice(0, -1);
+        items = items.slice(0, -1);
     }
 
-    return `${cabecera}${truncado}${pie}`.slice(0, LIMITE_CUERPO_META);
+    return `${cabecera}${truncado}\n${bloqueMontos}`.slice(0, LIMITE_CUERPO_META);
 }
 
 /**
@@ -127,7 +146,7 @@ export class NotificarCarritoWebWhatsappCasoUso {
     async ejecutar(entrada: NotificarCarritoWebWhatsappEntrada): Promise<void> {
         const cuerpo = formatearCuerpoResumenCarritoWhatsapp(entrada);
         // Footer corto: Meta limita a 60 caracteres en mensajes interactivos tipo botón.
-        const footer = 'Escribí *menu* para ir al inicio cuando quieras.';
+        const footer = 'Escribí _menu_ para volver al inicio.';
         await this.whatsapp.enviarMensajeBotones(entrada.numeroWhatsappDestino, cuerpo, footer, [
             { id: IDS_BOTONES_CARRITO_WEB.confirmar, texto: 'Confirmar' },
             { id: IDS_BOTONES_CARRITO_WEB.modificar, texto: 'Modificar' },

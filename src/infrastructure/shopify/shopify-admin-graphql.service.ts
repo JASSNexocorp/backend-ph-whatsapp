@@ -27,6 +27,13 @@ export class ShopifyAdminGraphqlService {
     }
 
     /**
+     * Expone si hay shop + token para que otros servicios no accedan a metodos privados por indice.
+     */
+    tieneCredencialesShopify(): boolean {
+        return this.credencialesCompletas();
+    }
+
+    /**
      * URL del endpoint GraphQL Admin segun tienda y version de API configurada.
      * Solo se llama si credencialesCompletas() ya devolvio true.
      */
@@ -78,6 +85,32 @@ export class ShopifyAdminGraphqlService {
             this.logger.error(`Error GraphQL fallo : ${mensaje}`);
             return null;
         }
+    }
+
+    /**
+     * Reintenta POST GraphQL ante fallos de red o cuerpo null; útil para crear/buscar clientes.
+     */
+    async ejecutarGraphqlAdminConReintentos<T>(
+        query: string,
+        variables?: Record<string, unknown>,
+    ): Promise<T | null> {
+        const max = Math.max(
+            1,
+            parseInt(this.config.get<string>('SHOPIFY_GRAPHQL_MAX_RETRIES') ?? '3', 10) || 3,
+        );
+        const baseMs = parseInt(this.config.get<string>('SHOPIFY_GRAPHQL_RETRY_DELAY_MS') ?? '400', 10) || 400;
+
+        let ultimo: T | null = null;
+        for (let intento = 1; intento <= max; intento++) {
+            ultimo = await this.ejecutarGraphqlAdmin<T>(query, variables);
+            if (ultimo !== null) {
+                return ultimo;
+            }
+            if (intento < max) {
+                await new Promise((r) => setTimeout(r, baseMs * intento));
+            }
+        }
+        return ultimo;
     }
 
 

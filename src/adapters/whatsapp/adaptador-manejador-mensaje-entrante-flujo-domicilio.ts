@@ -14,6 +14,8 @@ import { WhatsappSucursalMenuItem, WhatsappTurnoSucursal } from "src/core/whatsa
 import { WhatsAppClienteEntity } from "src/infrastructure/database/schemas/cliente-whatsapp.entity";
 import { WhatsAppConversacionEntity } from "src/infrastructure/database/schemas/whatsapp-conversation.entity";
 import { Repository } from "typeorm";
+import { HorarioAtencionBotWhatsappService } from "src/infrastructure/whatsapp/horario-atencion-bot-whatsapp.service";
+import { ShopifyClienteSincronizacionService } from "src/infrastructure/shopify/shopify-cliente-sincronizacion.service";
 
 // Número de teléfono del agente humano que atiende consultas especiales.
 const TELEFONO_AGENTE = '+591 78452415';
@@ -66,12 +68,14 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         private readonly repoCliente: Repository<WhatsAppClienteEntity>,
         @InjectRepository(WhatsAppConversacionEntity)
         private readonly repoConversacion: Repository<WhatsAppConversacionEntity>,
+        private readonly horarioAtencion: HorarioAtencionBotWhatsappService,
+        private readonly shopifyClienteSync: ShopifyClienteSincronizacionService,
     ) { }
 
     // Punto de entrada principal: lee el nodo actual y enruta al bloque correspondiente.
     async manejar(mensaje: MensajeEntranteWhatsappNormalizado): Promise<void> {
         // FASE 1: Asegurar cliente + conversación (memoria del bot).
-        const { conversacion } = await this.asegurarClienteYConversacion(mensaje.numeroWhatsappOrigen);
+        const { cliente, conversacion } = await this.asegurarClienteYConversacion(mensaje.numeroWhatsappOrigen);
 
         // FASE 2: Renovar expiración y persistir antes de responder.
         this.renovarConversacion(conversacion);
@@ -80,6 +84,19 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         // FASE 3: Marcar como leído y guardar el ID del mensaje para las façades de envío.
         await this.whatsapp.marcarComoLeido(mensaje.idMensajeWhatsapp);
         this.idMensajeActual = mensaje.idMensajeWhatsapp;
+
+        // FASE 3.1: Horario de atencion (sucursal pivote en cache); si cerrado, avisamos y salimos.
+        if (!this.horarioAtencion.botPuedeAtenderEnEsteMomento()) {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                this.horarioAtencion.obtenerTextoMensajeFueraDeHorario(),
+            );
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        // FASE 3.2: Enlazar o crear Customer en Shopify si aun no hay shopifyClienteId (no bloquea si falla).
+        await this.shopifyClienteSync.enlazarOCrearClienteShopifySiHaceFalta(cliente);
 
         // FASE 3.5: Botones del resumen de carrito enviado desde el menú web (confirmar / modificar / cancelar).
         if (mensaje.tipo === 'interactivo' && mensaje.idBotonPresionado) {

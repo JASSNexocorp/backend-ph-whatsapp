@@ -12,6 +12,8 @@ import { NotificarCarritoWebWhatsappCasoUso } from '../../core/use-cases/notific
 import { ProcesarWebhookEntranteWhatsappCasoUso } from '../../core/use-cases/procesar-webhook-entrante-whatsapp.caso-uso';
 import { NotificarCarritoWebWhatsappService } from '../whatsapp/notificar-carrito-web-whatsapp.service';
 import { ShopifyInformacionModule } from './shopify-informacion.modulo';
+import { HorarioAtencionBotWhatsappService } from '../whatsapp/horario-atencion-bot-whatsapp.service';
+import { ShopifyClienteSincronizacionService } from '../shopify/shopify-cliente-sincronizacion.service';
 
 /**
  * Módulo WhatsApp: Webhook + cliente HTTP hacia Graph API para enviar mensajes.
@@ -49,6 +51,9 @@ import { ShopifyInformacionModule } from './shopify-informacion.modulo';
 
         // Handler de flujo de compra (menú, tipo pedido, domicilio, etc.).
         AdaptadorManejadorMensajeEntranteFlujoDomicilio,
+
+        HorarioAtencionBotWhatsappService,
+        ShopifyClienteSincronizacionService,
 
         // Orquestador principal del webhook entrante.
         {
