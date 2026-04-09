@@ -52,6 +52,21 @@ export interface EntradaCrearOrdenShopify {
     tipoEntrega: 'DELIVERY' | 'PICKUP';
     metodoPago: string;
     datos: DatosOrdenSerializado;
+    /** Campos extra alineados al checkout web (customAttributes + metafields). */
+    apellidoCliente?: string | null;
+    ciCliente?: string | null;
+    razonSocialCliente?: string | null;
+    nitCliente?: string | null;
+    tarjetaPrimeros4?: string | null;
+    tarjetaUltimos4?: string | null;
+    idQr?: string | null;
+    nombreSucursal?: string | null;
+    coordenadasTexto?: string | null;
+    googleMapsUrl?: string | null;
+    aliasDireccion?: string | null;
+    indicacionesDireccion?: string | null;
+    /** Se serializa al metafield `datos_proceso_checkout`. */
+    datosCheckoutParaMetafield?: Record<string, unknown>;
 }
 
 // Resultado de la creacion : exito con ID y nombre de orden, o fallo con mensaje de error
@@ -130,14 +145,7 @@ export class ShopifyCrearOrdenService {
                         entrada.datos.direccionEntrega,
                     ),
                     customAttributes: this.construirAtributosPersonalizados(entrada),
-                    metafields: [
-                        {
-                            namespace: 'estructura',
-                            key: 'datos_carrito_whatsapp',
-                            type: 'json_string',
-                            value: JSON.stringify(entrada.datos.items),
-                        },
-                    ],
+                    metafields: this.construirMetafieldsOrden(entrada),
                 },
                 options: {
                     // DECREMENT_OBEYING_POLICY respeta la política de inventario del producto.
@@ -304,22 +312,145 @@ export class ShopifyCrearOrdenService {
         };
     }
 
-    // Construye los customAttributes con los datos clave del pedido para visualizarlos en Shopify.
+    // Atributos de pedido alineados al checkout web (Pizza Hut). Valores vacíos se omiten salvo cabeceras.
     private construirAtributosPersonalizados(entrada: EntradaCrearOrdenShopify): Array<{ key: string; value: string }> {
-        const atributos: Array<{ key: string; value: string }> = [
+        const nombreCompleto = [entrada.nombreCliente, entrada.apellidoCliente ?? '']
+            .map((s) => (s ?? '').trim())
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+        const celular = this.formatearCelular591(entrada.telefonoCliente);
+        const metodoLabel = this.etiquetaMetodoPago(entrada.metodoPago);
+        const detalleItems = entrada.datos.items.map((item, index) => ({
+            n: index + 1,
+            idVarianteShopify: item.idVarianteShopify,
+            idOfisistema: item.idOfisistema,
+            nombre: item.nombre,
+            cantidad: item.cantidad,
+            precioBase: item.precioBase,
+            opciones: item.opciones ?? [],
+        }));
+        let detalleJson = JSON.stringify(detalleItems);
+        if (detalleJson.length > 250) {
+            detalleJson = `${detalleJson.slice(0, 247)}...`;
+        }
+
+        const candidatos: Array<{ key: string; value: string } | null> = [
             { key: 'DATOS CLIENTE', value: '' },
-            { key: 'Nombre', value: entrada.nombreCliente },
-            { key: 'Celular', value: entrada.telefonoCliente },
-            { key: 'Metodo Pago', value: entrada.metodoPago },
+            { key: 'Nombre', value: nombreCompleto || entrada.nombreCliente || '' },
+            { key: 'Email', value: (entrada.emailCliente ?? '').trim() },
+            { key: 'Celular', value: celular },
+            entrada.ciCliente?.trim() ? { key: 'CI', value: entrada.ciCliente.trim() } : null,
+            entrada.razonSocialCliente?.trim()
+                ? { key: 'Razon Social', value: entrada.razonSocialCliente.trim() }
+                : null,
+            entrada.nitCliente?.trim() ? { key: 'NIT', value: entrada.nitCliente.trim() } : null,
+            entrada.metodoPago === 'tarjeta' && entrada.tarjetaPrimeros4?.trim()
+                ? { key: 'Tarjeta Primeros 4 Digitos', value: entrada.tarjetaPrimeros4.trim() }
+                : null,
+            entrada.metodoPago === 'tarjeta' && entrada.tarjetaUltimos4?.trim()
+                ? { key: 'Tarjeta Ultimos 4 Digitos', value: entrada.tarjetaUltimos4.trim() }
+                : null,
+            { key: 'Metodo Pago', value: metodoLabel },
+            entrada.metodoPago === 'qr' && entrada.idQr?.trim()
+                ? { key: 'ID QR', value: entrada.idQr.trim() }
+                : null,
             {
                 key: 'Metodo Entrega',
                 value: entrada.tipoEntrega === 'DELIVERY' ? 'Envío a Domicilio' : 'Recojo en Local',
             },
+            ...(entrada.tipoEntrega === 'DELIVERY'
+                ? [
+                      {
+                          key: 'Alias',
+                          value: (entrada.aliasDireccion ?? '').trim(),
+                      },
+                      {
+                          key: 'Indicaciones Direccion',
+                          value: (entrada.indicacionesDireccion ?? '').trim(),
+                      },
+                  ]
+                : []),
+            {
+                key: 'Local Designado',
+                value: (entrada.nombreSucursal ?? '').trim() || 'No especificado',
+            },
+            { key: 'C.C Coordenadas', value: (entrada.coordenadasTexto ?? '').trim() },
+            { key: 'C.C Google Maps', value: (entrada.googleMapsUrl ?? '').trim() },
+            { key: 'Detalle Pedido', value: detalleJson },
         ];
-        // Email solo se incluye si el cliente lo proporcionó durante el flujo del bot.
-        if (entrada.emailCliente) {
-            atributos.push({ key: 'Email', value: entrada.emailCliente });
+
+        return candidatos.filter(
+            (a): a is { key: string; value: string } =>
+                a != null && a.value !== undefined && a.value !== null,
+        );
+    }
+
+    private construirMetafieldsOrden(entrada: EntradaCrearOrdenShopify): Array<{
+        namespace: string;
+        key: string;
+        type: string;
+        value: string;
+    }> {
+        const datosCarritoProceso = entrada.datos.items.map((item) => ({
+            title: item.nombre,
+            quantity: item.cantidad,
+            variant_id: item.idVarianteShopify,
+            id_ofisistema: item.idOfisistema,
+            price: item.precioBase,
+            opciones: item.opciones ?? [],
+        }));
+        const checkout =
+            entrada.datosCheckoutParaMetafield ??
+            ({
+                origen: 'whatsapp',
+                metodo_pago: entrada.metodoPago,
+                tipo_entrega: entrada.tipoEntrega,
+            } as Record<string, unknown>);
+        return [
+            {
+                namespace: 'estructura',
+                key: 'datos_carrito_whatsapp',
+                type: 'json_string',
+                value: JSON.stringify(entrada.datos.items),
+            },
+            {
+                namespace: 'estructura',
+                key: 'datos_proceso_checkout',
+                type: 'json_string',
+                value: JSON.stringify(checkout),
+            },
+            {
+                namespace: 'estructura',
+                key: 'datos_carrito_proceso',
+                type: 'json_string',
+                value: JSON.stringify(datosCarritoProceso),
+            },
+        ];
+    }
+
+    private formatearCelular591(telefono: string): string {
+        const soloDigitos = (telefono ?? '').replace(/\D/g, '');
+        if (!soloDigitos) {
+            return '';
         }
-        return atributos;
+        if (soloDigitos.startsWith('591')) {
+            return `+${soloDigitos}`;
+        }
+        return `+591 ${soloDigitos}`;
+    }
+
+    private etiquetaMetodoPago(raw: string): string {
+        const m = (raw ?? '').toLowerCase();
+        if (m === 'efectivo' || m === 'cash') {
+            return 'Efectivo';
+        }
+        if (m === 'tarjeta' || m === 'credit' || m === 'tarjeta_credito') {
+            return 'Tarjeta';
+        }
+        if (m === 'qr' || m === 'pago qr') {
+            return 'Pago QR';
+        }
+        return raw || '—';
     }
 }

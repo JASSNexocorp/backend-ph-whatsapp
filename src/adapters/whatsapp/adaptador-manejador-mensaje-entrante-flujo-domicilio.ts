@@ -52,6 +52,9 @@ type NodoConversacion =
     | 'confirmando_datos_cliente'
     // Selección de pago y confirmación final antes de crear la orden.
     | 'seleccionando_metodo_pago'
+    | 'esperando_tarjeta_primeros_4'
+    | 'esperando_tarjeta_ultimos_4'
+    | 'esperando_id_qr_pago'
     | 'confirmando_pedido_final';
 
 /**
@@ -211,6 +214,18 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         }
         if (nodo === 'seleccionando_metodo_pago') {
             await this.manejarSeleccionandoMetodoPago(mensaje, conversacion);
+            return;
+        }
+        if (nodo === 'esperando_tarjeta_primeros_4') {
+            await this.manejarEsperandoTarjetaPrimeros4(mensaje, conversacion);
+            return;
+        }
+        if (nodo === 'esperando_tarjeta_ultimos_4') {
+            await this.manejarEsperandoTarjetaUltimos4(mensaje, conversacion);
+            return;
+        }
+        if (nodo === 'esperando_id_qr_pago') {
+            await this.manejarEsperandoIdQrPago(mensaje, conversacion);
             return;
         }
         if (nodo === 'confirmando_pedido_final') {
@@ -1007,6 +1022,13 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
                 this.repoCliente.create({
                     numeroWhatsapp,
                     nombre: null,
+                    apellido: null,
+                    ci: null,
+                    tarjetaPrimeros4: null,
+                    tarjetaUltimos4: null,
+                    email: null,
+                    nit: null,
+                    razonSocial: null,
                     shopifyClienteId: null,
                     activo: true,
                 }),
@@ -1451,12 +1473,146 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         sinMetodo.push({ _contexto: 'metodo_pago', metodo: metodoPago });
         conversacion.carrito = sinMetodo as any;
 
-        // Leemos los montos guardados cuando el web notificó el carrito.
-        const contextoPedido = this.obtenerContextoMenuWebCompleto(conversacion.carrito as any[]);
+        const numero = mensaje.numeroWhatsappOrigen;
+
+        if (metodoPago === 'tarjeta') {
+            await this.enviarTexto(
+                numero,
+                '💳 Escribí los *primeros 4 dígitos* de tu tarjeta (solo números, sin espacios):',
+            );
+            conversacion.nodoActual = 'esperando_tarjeta_primeros_4';
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        if (metodoPago === 'qr') {
+            await this.enviarTexto(
+                numero,
+                [
+                    '📱 Escribí el *ID de tu pago QR* si aplica.',
+                    'Si no tenés uno, escribí *0*.',
+                ].join('\n'),
+            );
+            conversacion.nodoActual = 'esperando_id_qr_pago';
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        await this.mostrarResumenYConfirmarPedido(numero, conversacion);
+    }
+
+    // Fusiona datos en el bloque metodo_pago del carrito (tarjeta 4+4, id QR, etc.).
+    private aplicarParcheMetodoPagoCarrito(
+        conversacion: WhatsAppConversacionEntity,
+        parche: Record<string, unknown>,
+    ): void {
+        const carrito: any[] = Array.isArray(conversacion.carrito) ? [...(conversacion.carrito as any[])] : [];
+        const actual =
+            carrito.find((x) => x?._contexto === 'metodo_pago') ??
+            ({ _contexto: 'metodo_pago', metodo: 'efectivo' } as Record<string, unknown>);
+        const sin = carrito.filter((x) => x?._contexto !== 'metodo_pago');
+        sin.push({ ...actual, ...parche });
+        conversacion.carrito = sin as any;
+    }
+
+    // Primer paso tarjeta: guarda 4 dígitos iniciales en BD y en el carrito.
+    private async manejarEsperandoTarjetaPrimeros4(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        if (mensaje.tipo !== 'texto') {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                'Por favor escribí solo los 4 números. 💳',
+            );
+            return;
+        }
+        const t = (mensaje.textoPlano ?? '').trim().replace(/\s/g, '');
+        if (!/^\d{4}$/.test(t)) {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                'Debés enviar *exactamente 4 dígitos* (solo números).',
+            );
+            return;
+        }
+        const cliente = await this.repoCliente.findOne({
+            where: { numeroWhatsapp: mensaje.numeroWhatsappOrigen },
+        });
+        if (cliente) {
+            cliente.tarjetaPrimeros4 = t;
+            await this.repoCliente.save(cliente);
+        }
+        this.aplicarParcheMetodoPagoCarrito(conversacion, { tarjetaPrimeros4: t });
+        await this.enviarTexto(
+            mensaje.numeroWhatsappOrigen,
+            'Ahora escribí los *últimos 4 dígitos* de tu tarjeta:',
+        );
+        conversacion.nodoActual = 'esperando_tarjeta_ultimos_4';
+        await this.repoConversacion.save(conversacion);
+    }
+
+    // Segundo paso tarjeta: últimos 4 dígitos y pasamos al resumen final.
+    private async manejarEsperandoTarjetaUltimos4(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        if (mensaje.tipo !== 'texto') {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                'Por favor escribí solo los 4 números. 💳',
+            );
+            return;
+        }
+        const t = (mensaje.textoPlano ?? '').trim().replace(/\s/g, '');
+        if (!/^\d{4}$/.test(t)) {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                'Debés enviar *exactamente 4 dígitos* (solo números).',
+            );
+            return;
+        }
+        const cliente = await this.repoCliente.findOne({
+            where: { numeroWhatsapp: mensaje.numeroWhatsappOrigen },
+        });
+        if (cliente) {
+            cliente.tarjetaUltimos4 = t;
+            await this.repoCliente.save(cliente);
+        }
+        this.aplicarParcheMetodoPagoCarrito(conversacion, { tarjetaUltimos4: t });
+        await this.mostrarResumenYConfirmarPedido(mensaje.numeroWhatsappOrigen, conversacion);
+    }
+
+    // Opcional: ID de pago QR antes del resumen.
+    private async manejarEsperandoIdQrPago(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        if (mensaje.tipo !== 'texto') {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                'Escribí el ID como texto o *0* si no aplica. 📱',
+            );
+            return;
+        }
+        const raw = (mensaje.textoPlano ?? '').trim();
+        const idQr = raw === '0' || raw === '' ? '' : raw.slice(0, 200);
+        this.aplicarParcheMetodoPagoCarrito(conversacion, { idQr });
+        await this.mostrarResumenYConfirmarPedido(mensaje.numeroWhatsappOrigen, conversacion);
+    }
+
+    // Muestra totales y botones de confirmación final (tras método de pago y datos extra si aplica).
+    private async mostrarResumenYConfirmarPedido(
+        numeroDestino: string,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        const carrito = conversacion.carrito as any[];
+        const metodoPago = carrito.find((x: any) => x?._contexto === 'metodo_pago')?.metodo ?? 'efectivo';
+        const contextoPedido = this.obtenerContextoMenuWebCompleto(carrito);
         const subtotal = contextoPedido?.resumenMontos?.subtotalProductos ?? 0;
         const costoEnvio = contextoPedido?.resumenMontos?.costoEnvio ?? 0;
         const total = contextoPedido?.resumenMontos?.total ?? 0;
-        const etiquetaPago = metodoPago === 'efectivo' ? '💵 Efectivo' : metodoPago === 'tarjeta' ? '💳 Tarjeta' : '📱 QR';
+        const etiquetaPago =
+            metodoPago === 'efectivo' ? '💵 Efectivo' : metodoPago === 'tarjeta' ? '💳 Tarjeta' : '📱 QR';
 
         const lineas = [
             '🧾 *Resumen de tu pedido:*',
@@ -1471,7 +1627,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         ].filter((l): l is string => l !== null);
 
         await this.enviarBotones(
-            mensaje.numeroWhatsappOrigen,
+            numeroDestino,
             lineas.join('\n'),
             'Esta acción creará tu orden en el sistema.',
             [
@@ -1545,7 +1701,8 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
 
         const carritoActual = conversacion.carrito as any[];
         const contextoPedido = this.obtenerContextoMenuWebCompleto(carritoActual);
-        const metodoPago = carritoActual.find((x: any) => x?._contexto === 'metodo_pago')?.metodo ?? 'efectivo';
+        const pagoCtx = carritoActual.find((x: any) => x?._contexto === 'metodo_pago') ?? {};
+        const metodoPago = (pagoCtx as any).metodo ?? 'efectivo';
 
         console.log('[crearOrden] carrito / contexto menu_web_activo', {
             carritoLength: Array.isArray(carritoActual) ? carritoActual.length : 0,
@@ -1561,6 +1718,11 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
                   }
                 : null,
             metodoPago,
+            pagoCtxResumen: {
+                tarjetaPrimeros4: !!(pagoCtx as any).tarjetaPrimeros4,
+                tarjetaUltimos4: !!(pagoCtx as any).tarjetaUltimos4,
+                idQr: (pagoCtx as any).idQr,
+            },
         });
 
         if (!contextoPedido?.datosOrden?.items?.length) {
@@ -1622,11 +1784,34 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             direccionEntrega: datosOrdenParaCrear.direccionEntrega,
         });
 
+        const ubicacionOrden = this.obtenerUbicacionDelCarrito(carritoActual);
+        const coordenadasTexto =
+            ubicacionOrden != null ? `${ubicacionOrden.lat},${ubicacionOrden.lng}` : '';
+        const googleMapsUrl =
+            ubicacionOrden != null
+                ? `https://www.google.com/maps?q=${ubicacionOrden.lat},${ubicacionOrden.lng}`
+                : '';
+        const repartidorBloque = carritoActual.find((x: any) => x?._contexto === 'repartidor');
+        const indicacionesDireccion = (repartidorBloque?.indicaciones ?? '').toString().trim();
+
+        const datosCheckoutParaMetafield: Record<string, unknown> = {
+            origen: 'whatsapp',
+            metodo_pago: metodoPago,
+            tipo_entrega: tipoEntrega === 'DELIVERY' ? 'domicilio' : 'retiro',
+            tarjeta_primeros_4: (pagoCtx as any).tarjetaPrimeros4 ?? cliente.tarjetaPrimeros4 ?? null,
+            tarjeta_ultimos_4: (pagoCtx as any).tarjetaUltimos4 ?? cliente.tarjetaUltimos4 ?? null,
+            id_qr: (pagoCtx as any).idQr ?? null,
+            telefono: cliente.numeroWhatsapp,
+            email: cliente.email,
+        };
+
         // FASE 1: Crear la orden en Shopify (operación crítica).
         console.log('[crearOrden] FASE 1 → Shopify crearOrden...');
         const resultadoShopify = await this.shopifyCrearOrden.crearOrden({
             shopifyClienteId: cliente.shopifyClienteId ?? '',
             nombreCliente: cliente.nombre ?? 'Cliente',
+            apellidoCliente: cliente.apellido,
+            ciCliente: cliente.ci,
             telefonoCliente: cliente.numeroWhatsapp,
             emailCliente: cliente.email ?? undefined,
             notaPedido: `${tipoEntrega === 'DELIVERY' ? 'Domicilio' : 'Retiro'} | Pago: ${metodoPago}`,
@@ -1634,6 +1819,17 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             tipoEntrega,
             metodoPago,
             datos: datosOrdenParaCrear,
+            razonSocialCliente: cliente.razonSocial,
+            nitCliente: cliente.nit,
+            tarjetaPrimeros4: (pagoCtx as any).tarjetaPrimeros4 ?? cliente.tarjetaPrimeros4,
+            tarjetaUltimos4: (pagoCtx as any).tarjetaUltimos4 ?? cliente.tarjetaUltimos4,
+            idQr: metodoPago === 'qr' ? ((pagoCtx as any).idQr ?? '') : undefined,
+            nombreSucursal: contextoPedido.nombreSucursal ?? null,
+            coordenadasTexto: coordenadasTexto || undefined,
+            googleMapsUrl: googleMapsUrl || undefined,
+            aliasDireccion: '',
+            indicacionesDireccion: indicacionesDireccion || undefined,
+            datosCheckoutParaMetafield,
         });
 
         console.log('[crearOrden] resultado Shopify', resultadoShopify);
@@ -1646,6 +1842,10 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             );
             return;
         }
+
+        cliente.tarjetaPrimeros4 = null;
+        cliente.tarjetaUltimos4 = null;
+        await this.repoCliente.save(cliente);
 
         // FASE 2: Mover el fulfillment a la sucursal correcta (no crítico).
         console.log('[crearOrden] FASE 2 → moverFulfillment', {
@@ -1668,7 +1868,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             tipoEntrega,
             metodoPago: metodoPago as 'efectivo' | 'tarjeta' | 'qr',
             nombreCliente: cliente.nombre ?? 'Cliente',
-            apellidoCliente: '',
+            apellidoCliente: cliente.apellido ?? '',
             telefonoCliente: cliente.numeroWhatsapp,
             emailCliente: cliente.email,
             nitCliente: cliente.nit,

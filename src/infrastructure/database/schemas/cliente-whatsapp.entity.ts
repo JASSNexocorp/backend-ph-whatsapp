@@ -26,6 +26,18 @@ export class WhatsAppClienteEntity {
   @Column({ name: 'nombre', type: 'varchar', length: 100, nullable: true })
   nombre!: string | null;
 
+  @Column({ name: 'apellido', type: 'varchar', length: 100, nullable: true })
+  apellido!: string | null;
+
+  @Column({ name: 'ci', type: 'varchar', length: 50, nullable: true })
+  ci!: string | null;
+
+  @Column({ name: 'tarjeta_primeros_4', type: 'varchar', length: 4, nullable: true })
+  tarjetaPrimeros4!: string | null;
+
+  @Column({ name: 'tarjeta_ultimos_4', type: 'varchar', length: 4, nullable: true })
+  tarjetaUltimos4!: string | null;
+
   @Column({ name: 'email', type: 'varchar', length: 255, nullable: true })
   email!: string | null;
 

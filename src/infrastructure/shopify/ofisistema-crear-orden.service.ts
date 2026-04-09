@@ -7,6 +7,7 @@ import { HttpService } from '@nestjs/axios';
 import { Injectable, Logger } from '@nestjs/common';
 import { firstValueFrom } from 'rxjs';
 import type { DatosOrdenSerializado, ItemOrdenShopify } from './shopify-crear-orden.service';
+import { escribirReporteOfisistemaJson } from './ofisistema-reporte-json.escritor';
 
 // URL fija de la API intermediaria de OfiSistema.
 const URL_OFISISTEMA = 'https://apicloud.farmacorp.com/shopifygraphql/api/ShopifyGraphQL/forward-order';
@@ -48,8 +49,11 @@ export class OfisistemaCrearOrdenService {
     // Crea la orden en OfiSistema y retorna el link de seguimiento si la API lo proporciona.
     // Si la API falla, retorna exito:false sin interrumpir el flujo de confirmación al cliente.
     async crearOrden(entrada: EntradaCrearOrdenOfisistema): Promise<ResultadoCrearOrdenOfisistema> {
-        try {
-            console.log('[crearOrden][OfiSistema] entrada', {
+        const idReporte = `ofisistema-${Date.now()}`;
+        escribirReporteOfisistemaJson({
+            fase: 'entrada',
+            idReporte,
+            entrada: {
                 shopifyOrdenNombre: entrada.shopifyOrdenNombre,
                 sucursalOfisistemaId: entrada.sucursalOfisistemaId,
                 tipoEntrega: entrada.tipoEntrega,
@@ -57,10 +61,11 @@ export class OfisistemaCrearOrdenService {
                 precioTotal: entrada.precioTotal,
                 costoEnvio: entrada.costoEnvio,
                 itemsCount: entrada.datos?.items?.length,
-            });
-            const idSucursalLimpio = this.extraerIdNumerico(entrada.sucursalOfisistemaId);
+            },
+        });
+        try {
+            const idSucursalLimpio = this.normalizarApiStoreIdTictuk(entrada.sucursalOfisistemaId);
             const items = this.construirItems(entrada.datos.items, entrada.tipoEntrega);
-            console.log('[crearOrden][OfiSistema] orderItems construidos', { count: items.length, apiStoreId: idSucursalLimpio });
 
             // Los precios se envían en centavos (x100) según el contrato de la API Tictuk.
             const precioTotalCentavos = Math.round(entrada.precioTotal * 100);
@@ -117,10 +122,15 @@ export class OfisistemaCrearOrdenService {
                 BatchNumber: null,
             };
 
-            console.log('[crearOrden][OfiSistema] POST', URL_OFISISTEMA, {
-                tictukOrderId: payload.tictukOrderId,
-                apiStoreId: payload.apiStoreId,
-                orderItemsLength: Array.isArray(payload.orderItems) ? payload.orderItems.length : 0,
+            escribirReporteOfisistemaJson({
+                fase: 'payload',
+                idReporte,
+                resumenPayload: {
+                    tictukOrderId: payload.tictukOrderId,
+                    apiStoreId: payload.apiStoreId,
+                    orderItemsLength: Array.isArray(payload.orderItems) ? payload.orderItems.length : 0,
+                },
+                payload,
             });
 
             const respuesta = await firstValueFrom(
@@ -131,9 +141,11 @@ export class OfisistemaCrearOrdenService {
                 }),
             );
 
-            console.log('[crearOrden][OfiSistema] respuesta HTTP', {
-                status: (respuesta as any)?.status,
-                data: (respuesta as any)?.data,
+            escribirReporteOfisistemaJson({
+                fase: 'respuesta_ok',
+                idReporte,
+                status: (respuesta as { status?: number }).status,
+                data: respuesta.data,
             });
 
             const linkSeguimiento = this.extraerLink(respuesta.data);
@@ -142,7 +154,12 @@ export class OfisistemaCrearOrdenService {
         } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
             this.logger.error(`Error OfiSistema (no crítico): ${msg}`);
-            console.log('[crearOrden][OfiSistema] error', error);
+            escribirReporteOfisistemaJson({
+                fase: 'error',
+                idReporte,
+                mensaje: msg,
+                error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
+            });
             return { exito: false, error: msg };
         }
     }
@@ -320,10 +337,24 @@ export class OfisistemaCrearOrdenService {
         return 'cash';
     }
 
-    // Extrae solo los dígitos de un ID que puede venir como GID de Shopify o string numérico.
-    private extraerIdNumerico(id: string): string {
+    /**
+     * apiStoreId para Tictuk: desde códigos tipo PH01/PH02 se envía solo el número (1, 2…).
+     * Si llega un GID de Shopify, se usa el id numérico del último segmento.
+     */
+    private normalizarApiStoreIdTictuk(id: string): string {
         const s = (id ?? '').trim();
-        if (!s) return '0';
-        return (s.split('/').pop() ?? s).replace(/\D/g, '') || '0';
+        if (!s) {
+            return '0';
+        }
+        if (s.includes('gid://')) {
+            const tail = s.split('/').pop() ?? s;
+            return tail.replace(/\D/g, '') || '0';
+        }
+        const soloDigitos = s.replace(/\D/g, '');
+        if (!soloDigitos) {
+            return '0';
+        }
+        const n = Number.parseInt(soloDigitos, 10);
+        return Number.isFinite(n) ? String(n) : '0';
     }
 }
