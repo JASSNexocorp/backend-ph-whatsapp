@@ -16,6 +16,7 @@ import { WhatsAppConversacionEntity } from "src/infrastructure/database/schemas/
 import { Repository } from "typeorm";
 import { HorarioAtencionBotWhatsappService } from "src/infrastructure/whatsapp/horario-atencion-bot-whatsapp.service";
 import { ShopifyClienteSincronizacionService } from "src/infrastructure/shopify/shopify-cliente-sincronizacion.service";
+import type { DatosOrdenSerializado } from "src/infrastructure/shopify/shopify-crear-orden.service";
 import { ShopifyCrearOrdenService } from "src/infrastructure/shopify/shopify-crear-orden.service";
 import { OfisistemaCrearOrdenService } from "src/infrastructure/shopify/ofisistema-crear-orden.service";
 
@@ -155,6 +156,13 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             await this.repoConversacion.save(conversacion);
             return;
         }
+
+        // menu_principal: maneja "Hacer un pedido", "Otras opciones" y guardrail de entrada inesperada.
+        if (nodo === 'menu_principal') {
+            await this.manejarMenuPrincipal(mensaje, conversacion);
+            return;
+        }
+
         if (nodo === 'otras_opciones') {
             await this.manejarOtrasOpciones(mensaje, conversacion);
             return;
@@ -938,6 +946,29 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         return { lat: ubicacion.lat, lng: ubicacion.lng };
     }
 
+    /**
+     * Añade coordenadas del carrito a la dirección de entrega para Shopify/OfiSistema
+     * cuando el pedido vino solo con líneas desde el web y la dirección era genérica.
+     */
+    private combinarDatosOrdenConUbicacionCarrito(
+        datosOrden: DatosOrdenSerializado,
+        carrito: any[],
+    ): DatosOrdenSerializado {
+        const ubicacion = this.obtenerUbicacionDelCarrito(carrito);
+        if (!ubicacion) {
+            return datosOrden;
+        }
+        const coords = `Ubicación compartida: ${ubicacion.lat.toFixed(6)}, ${ubicacion.lng.toFixed(6)}`;
+        const dir = datosOrden.direccionEntrega;
+        return {
+            ...datosOrden,
+            direccionEntrega: {
+                ...dir,
+                address2: dir?.address2 ? `${dir.address2} | ${coords}` : coords,
+            },
+        };
+    }
+
     // Extrae la sucursal guardada en el carrito cuando la sucursal más cercana no tiene domicilio.
     private obtenerSucursalGuardadaDelCarrito(carrito: any[]): WhatsappSucursalConDistanciaKm | null {
         if (!Array.isArray(carrito)) return null;
@@ -1062,7 +1093,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         await this.whatsapp.enviarSolicitudUbicacion(numeroDestino, textoCuerpo);
     }
 
-        // ─── NUEVOS MÉTODOS: BIENVENIDA CON IMAGEN ────────────────────────────────────
+    // ─── NUEVOS MÉTODOS: BIENVENIDA CON IMAGEN ────────────────────────────────────
 
     // Envía la imagen de bienvenida (si está configurada) seguida del menú principal.
     // Se usa en el primer contacto (nodo inicio) y cuando el usuario escribe "menu".
@@ -1488,10 +1519,17 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         numeroDestino: string,
         conversacion: WhatsAppConversacionEntity,
     ): Promise<void> {
+        console.log('[crearOrden] inicio', {
+            numeroDestino,
+            idConversacion: conversacion.idConversacion,
+            nodoActual: conversacion.nodoActual,
+        });
+
         const cliente = await this.repoCliente.findOne({
             where: { numeroWhatsapp: numeroDestino },
         });
         if (!cliente) {
+            console.log('[crearOrden] abort: cliente no encontrado en BD', { numeroDestino });
             await this.enviarTexto(
                 numeroDestino,
                 '❌ Error al procesar: no encontramos tu perfil. Escribe *menu* para reintentar.',
@@ -1499,11 +1537,37 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             return;
         }
 
+        console.log('[crearOrden] cliente', {
+            idCliente: cliente.idCliente,
+            shopifyClienteId: cliente.shopifyClienteId,
+            nombre: cliente.nombre,
+        });
+
         const carritoActual = conversacion.carrito as any[];
         const contextoPedido = this.obtenerContextoMenuWebCompleto(carritoActual);
         const metodoPago = carritoActual.find((x: any) => x?._contexto === 'metodo_pago')?.metodo ?? 'efectivo';
 
+        console.log('[crearOrden] carrito / contexto menu_web_activo', {
+            carritoLength: Array.isArray(carritoActual) ? carritoActual.length : 0,
+            contextoPedido: contextoPedido
+                ? {
+                      nombreSucursal: contextoPedido.nombreSucursal,
+                      tipoEntregaOrden: contextoPedido.tipoEntregaOrden,
+                      tipoEntrega: contextoPedido.tipoEntrega,
+                      resumenMontos: contextoPedido.resumenMontos,
+                      sucursalShopifyLocationId: contextoPedido.sucursalShopifyLocationId,
+                      sucursalOfisistemaId: contextoPedido.sucursalOfisistemaId,
+                      datosOrdenItems: contextoPedido.datosOrden?.items?.length ?? 0,
+                  }
+                : null,
+            metodoPago,
+        });
+
         if (!contextoPedido?.datosOrden?.items?.length) {
+            console.log('[crearOrden] abort: sin datosOrden.items', {
+                tieneContexto: !!contextoPedido,
+                datosOrden: contextoPedido?.datosOrden,
+            });
             await this.enviarTexto(
                 numeroDestino,
                 '❌ No encontramos los productos de tu pedido. Escribe *menu* e intentá de nuevo.',
@@ -1540,7 +1604,26 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             }
         }
 
+        console.log('[crearOrden] sucursal resuelta', {
+            locationId,
+            ofisistemaId,
+            tipoEntrega,
+            tipoEntregaRaw,
+        });
+
+        const datosOrdenParaCrear = this.combinarDatosOrdenConUbicacionCarrito(
+            contextoPedido.datosOrden,
+            carritoActual,
+        );
+
+        console.log('[crearOrden] datosOrdenParaCrear', {
+            itemsCount: datosOrdenParaCrear.items?.length,
+            primerItem: datosOrdenParaCrear.items?.[0],
+            direccionEntrega: datosOrdenParaCrear.direccionEntrega,
+        });
+
         // FASE 1: Crear la orden en Shopify (operación crítica).
+        console.log('[crearOrden] FASE 1 → Shopify crearOrden...');
         const resultadoShopify = await this.shopifyCrearOrden.crearOrden({
             shopifyClienteId: cliente.shopifyClienteId ?? '',
             nombreCliente: cliente.nombre ?? 'Cliente',
@@ -1550,8 +1633,10 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             costoEnvio: contextoPedido.resumenMontos?.costoEnvio ?? 0,
             tipoEntrega,
             metodoPago,
-            datos: contextoPedido.datosOrden,
+            datos: datosOrdenParaCrear,
         });
+
+        console.log('[crearOrden] resultado Shopify', resultadoShopify);
 
         if (!resultadoShopify.exito) {
             this.logger.error(`Fallo al crear orden Shopify para ${numeroDestino}: ${resultadoShopify.error}`);
@@ -1563,6 +1648,11 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         }
 
         // FASE 2: Mover el fulfillment a la sucursal correcta (no crítico).
+        console.log('[crearOrden] FASE 2 → moverFulfillment', {
+            ordenId: resultadoShopify.ordenId,
+            locationId,
+            seEjecuta: !!(resultadoShopify.ordenId && locationId),
+        });
         if (resultadoShopify.ordenId && locationId) {
             await this.shopifyCrearOrden.moverFulfillmentASucursal(
                 resultadoShopify.ordenId,
@@ -1571,6 +1661,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         }
 
         // FASE 3: Crear la orden en OfiSistema (no crítico).
+        console.log('[crearOrden] FASE 3 → OfiSistema crearOrden...');
         const resultadoOfisistema = await this.ofisistemaCrearOrden.crearOrden({
             shopifyOrdenNombre: resultadoShopify.ordenNombre ?? '',
             sucursalOfisistemaId: ofisistemaId ?? '0',
@@ -1584,8 +1675,10 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             razonSocialCliente: cliente.razonSocial,
             precioTotal: contextoPedido.resumenMontos?.total ?? 0,
             costoEnvio: contextoPedido.resumenMontos?.costoEnvio ?? 0,
-            datos: contextoPedido.datosOrden,
+            datos: datosOrdenParaCrear,
         });
+
+        console.log('[crearOrden] resultado OfiSistema', resultadoOfisistema);
 
         // FASE 4: Limpiar el carrito y volver al menú principal.
         const contextosPersistir = ['domicilio', 'repartidor', 'sucursal_asignada'];
@@ -1594,6 +1687,11 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         )) as any;
         conversacion.nodoActual = 'menu_principal';
         await this.repoConversacion.save(conversacion);
+
+        console.log('[crearOrden] fin OK', {
+            ordenNombre: resultadoShopify.ordenNombre,
+            linkOfi: resultadoOfisistema.linkSeguimiento,
+        });
 
         // FASE 5: Enviar el mensaje de éxito con número de orden y link de OfiSistema.
         await this.enviarMensajeExitoPedido(

@@ -7,6 +7,10 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { NotificarCarritoWhatsappDto } from 'src/adapters/controllers/dtos/notificar-carrito-whatsapp.dto';
+import {
+    TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP,
+    type PuertoInformacionTiendaWhatsapp,
+} from 'src/core/ports/puerto-informacion-tienda.whatsapp';
 import { TOKEN_PUERTO_WHATSAPP_GRAPH_API } from 'src/core/ports/puerto-whatsapp-graph-api';
 import type { PuertoWhatsappGraphApi } from 'src/core/ports/puerto-whatsapp-graph-api';
 import {
@@ -16,6 +20,8 @@ import {
 import { MenuClienteJwtService } from 'src/infrastructure/auth/menu-cliente-jwt.service';
 import { WhatsAppClienteEntity } from 'src/infrastructure/database/schemas/cliente-whatsapp.entity';
 import { WhatsAppConversacionEntity } from 'src/infrastructure/database/schemas/whatsapp-conversation.entity';
+import type { DatosOrdenSerializado } from 'src/infrastructure/shopify/shopify-crear-orden.service';
+import { construirDatosOrdenDesdeLineasNotificacion } from 'src/infrastructure/whatsapp/construir-datos-orden-desde-notificacion-carrito';
 import { Repository } from 'typeorm';
 
 /**
@@ -30,6 +36,8 @@ export class NotificarCarritoWebWhatsappService {
         private readonly menuClienteJwt: MenuClienteJwtService,
         @Inject(TOKEN_PUERTO_WHATSAPP_GRAPH_API)
         private readonly whatsapp: PuertoWhatsappGraphApi,
+        @Inject(TOKEN_PUERTO_INFORMACION_TIENDA_WHATSAPP)
+        private readonly tiendaInfo: PuertoInformacionTiendaWhatsapp,
         @InjectRepository(WhatsAppClienteEntity)
         private readonly repoCliente: Repository<WhatsAppClienteEntity>,
         @InjectRepository(WhatsAppConversacionEntity)
@@ -132,14 +140,16 @@ export class NotificarCarritoWebWhatsappService {
 
         const raw = Array.isArray(conversacion.carrito) ? [...(conversacion.carrito as unknown[])] : [];
         const filtrado = raw.filter((x: any) => x?._contexto !== 'menu_web_activo');
+        const idsSucursal = this.resolverIdsSucursalDesdeCache(nombreSucursal, dto);
+        const datosOrden = this.resolverDatosOrdenParaPersistir(dto);
         filtrado.push({
             _contexto: 'menu_web_activo',
             nombreSucursal: nombreSucursal.trim(),
             tipoEntrega: tipoEntrega.trim(),
-            // Datos de sucursal necesarios para crear la orden y mover el fulfillment.
-            sucursalShopifyLocationId: dto.sucursalShopifyLocationId ?? null,
-            sucursalOfisistemaId: dto.sucursalOfisistemaId ?? null,
-            tipoEntregaOrden: dto.tipoEntregaOrden ?? 'DELIVERY',
+            // Datos de sucursal: el front puede omitirlos; se completan desde cache por nombre (JWT).
+            sucursalShopifyLocationId: idsSucursal.shopify,
+            sucursalOfisistemaId: idsSucursal.ofisistema,
+            tipoEntregaOrden: dto.tipoEntregaOrden ?? this.mapearTipoEntregaJwtAOrden(tipoEntrega),
             notificadoEn: new Date().toISOString(),
             resumenMontos: {
                 subtotalProductos: dto.subtotalProductos,
@@ -148,17 +158,65 @@ export class NotificarCarritoWebWhatsappService {
                 total: dto.total,
                 lineas: dto.lineas.length,
             },
-            // datosOrden contiene items completos con precios, IDs y dirección de entrega.
-            // Se parsea aquí para no guardar strings anidados en el JSONB.
-            datosOrden: dto.datosOrdenSerializado
-                ? (() => {
-                    try { return JSON.parse(dto.datosOrdenSerializado); }
-                    catch { return null; }
-                  })()
-                : null,
+            // datosOrden: JSON del front o construcción desde líneas + subtotal en el servidor.
+            datosOrden,
         });
         conversacion.carrito = filtrado as any;
         conversacion.ultimaActividad = new Date();
         await this.repoConversacion.save(conversacion);
+    }
+
+    /**
+     * Si el front envía `datosOrdenSerializado` válido, se usa; si no, se arma desde líneas + subtotal.
+     */
+    private resolverDatosOrdenParaPersistir(dto: NotificarCarritoWhatsappDto): DatosOrdenSerializado {
+        const raw = dto.datosOrdenSerializado?.trim();
+        if (raw) {
+            try {
+                const parsed = JSON.parse(raw) as DatosOrdenSerializado;
+                if (parsed?.items?.length) {
+                    return parsed;
+                }
+            } catch {
+                this.logger.warn('datosOrdenSerializado inválido; se reconstruye desde lineas del DTO.');
+            }
+        }
+        return construirDatosOrdenDesdeLineasNotificacion(dto.subtotalProductos, dto.lineas);
+    }
+
+    /**
+     * `tipoEntrega` viene del JWT (ej. domicilio / retiro). OfiSistema espera DELIVERY | PICKUP.
+     */
+    private mapearTipoEntregaJwtAOrden(tipoEntregaJwt: string): string {
+        const t = (tipoEntregaJwt ?? '').trim().toLowerCase();
+        if (t === 'retiro' || t === 'retiro_local' || t === 'pickup') {
+            return 'PICKUP';
+        }
+        return 'DELIVERY';
+    }
+
+    /**
+     * Completa IDs de sucursal desde la cache de tienda cuando el front no los envía.
+     */
+    private resolverIdsSucursalDesdeCache(
+        nombreSucursal: string,
+        dto: NotificarCarritoWhatsappDto,
+    ): { shopify: string | null; ofisistema: string | null } {
+        let shopify = dto.sucursalShopifyLocationId?.trim() || null;
+        let ofisistema = dto.sucursalOfisistemaId?.trim() || null;
+        if (shopify && ofisistema) {
+            return { shopify, ofisistema };
+        }
+        const nombre = (nombreSucursal ?? '').trim().toLowerCase();
+        if (!nombre) {
+            return { shopify, ofisistema };
+        }
+        const cache = this.tiendaInfo.obtenerInformacionTiendaEnCache();
+        const sucursal = cache?.sucursales.find((s) => s.nombre.toLowerCase() === nombre);
+        if (sucursal) {
+            shopify = shopify ?? sucursal.id_shopify ?? null;
+            ofisistema = ofisistema ?? sucursal.id_ofisistema ?? null;
+        }
+        return { shopify, ofisistema };
     }
 }

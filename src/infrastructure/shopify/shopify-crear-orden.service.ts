@@ -10,7 +10,7 @@ import { ShopifyAdminGraphqlService } from "./shopify-admin-graphql.service";
 // Estructura de cada item del carrito para construir el lineItem de Shopify
 export interface ItemOrdenShopify {
     idVarianteShopify: string;
-    ifOfisistema: string;
+    idOfisistema: string;
     objNum: string;
     nombre: string;
     cantidad: number;
@@ -74,11 +74,21 @@ export class ShopifyCrearOrdenService {
     // Si Shopify no tiene credenciales o falla retorna exito : false sin interrumpir el bot
     async crearOrden(entrada: EntradaCrearOrdenShopify): Promise<ResultadoCrearOrdenShopify> {
         try {
+            console.log('[crearOrden][Shopify] entrada', {
+                shopifyClienteId: entrada.shopifyClienteId,
+                tipoEntrega: entrada.tipoEntrega,
+                metodoPago: entrada.metodoPago,
+                costoEnvio: entrada.costoEnvio,
+                itemsCount: entrada.datos?.items?.length,
+            });
             if (!this.shopify.tieneCredencialesShopify()) {
+                console.log('[crearOrden][Shopify] abort: sin credenciales');
                 return { exito: false, error: 'Sin credenciales de Shopify configuradas' };
             }
             const lineItems = this.construirLineItems(entrada.datos.items);
+            console.log('[crearOrden][Shopify] lineItems construidos', { count: lineItems.length, lineItems });
             if (!lineItems.length) {
+                console.log('[crearOrden][Shopify] abort: lineItems vacío');
                 return { exito: false, error: 'Carrito vacío: no se puede crear la orden' };
             }
             const variables = {
@@ -151,23 +161,29 @@ export class ShopifyCrearOrdenService {
                 };
                 errors?: unknown;
             }>(mutation, variables);
+            console.log('[crearOrden][Shopify] respuesta GraphQL raw', JSON.stringify(respuesta, null, 2));
             if (!respuesta || (respuesta as any).errors) {
                 this.logger.error(`orderCreate errores GraphQL: ${JSON.stringify((respuesta as any)?.errors)}`);
+                console.log('[crearOrden][Shopify] error capa GraphQL', (respuesta as any)?.errors);
                 return { exito: false, error: 'Error en la API de Shopify' };
             }
             const erroresUsuario = respuesta.data?.orderCreate?.userErrors ?? [];
             if (erroresUsuario.length > 0) {
                 this.logger.error(`orderCreate userErrors: ${JSON.stringify(erroresUsuario)}`);
+                console.log('[crearOrden][Shopify] userErrors', erroresUsuario);
                 return { exito: false, error: erroresUsuario.map(e => e.message).join(', ') };
             }
             const orden = respuesta.data?.orderCreate?.order;
             if (!orden?.id) {
+                console.log('[crearOrden][Shopify] abort: order sin id', { orden });
                 return { exito: false, error: 'Shopify no retornó el ID de la orden' };
             }
+            console.log('[crearOrden][Shopify] OK', { ordenId: orden.id, ordenNombre: orden.name });
             return { exito: true, ordenId: orden.id, ordenNombre: orden.name ?? '' };
         } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
             this.logger.error(`Error general al crear orden Shopify: ${msg}`);
+            console.log('[crearOrden][Shopify] excepción', error);
             return { exito: false, error: msg };
         }
     }
@@ -176,6 +192,7 @@ export class ShopifyCrearOrdenService {
     // Si ya está en esa sucursal o falla, solo loggea — nunca interrumpe la confirmación al cliente.
     async moverFulfillmentASucursal(shopifyOrdenId: string, shopifyLocationId: string): Promise<void> {
         try {
+            console.log('[crearOrden][Shopify] moverFulfillmentASucursal', { shopifyOrdenId, shopifyLocationId });
             const fulfillmentOrderId = await this.obtenerPrimerFulfillmentOrderId(shopifyOrdenId);
             if (!fulfillmentOrderId) {
                 this.logger.warn(`No se encontró fulfillmentOrder para la orden ${shopifyOrdenId}`);

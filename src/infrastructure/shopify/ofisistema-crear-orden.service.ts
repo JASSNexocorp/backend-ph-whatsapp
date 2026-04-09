@@ -49,8 +49,18 @@ export class OfisistemaCrearOrdenService {
     // Si la API falla, retorna exito:false sin interrumpir el flujo de confirmación al cliente.
     async crearOrden(entrada: EntradaCrearOrdenOfisistema): Promise<ResultadoCrearOrdenOfisistema> {
         try {
+            console.log('[crearOrden][OfiSistema] entrada', {
+                shopifyOrdenNombre: entrada.shopifyOrdenNombre,
+                sucursalOfisistemaId: entrada.sucursalOfisistemaId,
+                tipoEntrega: entrada.tipoEntrega,
+                metodoPago: entrada.metodoPago,
+                precioTotal: entrada.precioTotal,
+                costoEnvio: entrada.costoEnvio,
+                itemsCount: entrada.datos?.items?.length,
+            });
             const idSucursalLimpio = this.extraerIdNumerico(entrada.sucursalOfisistemaId);
             const items = this.construirItems(entrada.datos.items, entrada.tipoEntrega);
+            console.log('[crearOrden][OfiSistema] orderItems construidos', { count: items.length, apiStoreId: idSucursalLimpio });
 
             // Los precios se envían en centavos (x100) según el contrato de la API Tictuk.
             const precioTotalCentavos = Math.round(entrada.precioTotal * 100);
@@ -107,6 +117,12 @@ export class OfisistemaCrearOrdenService {
                 BatchNumber: null,
             };
 
+            console.log('[crearOrden][OfiSistema] POST', URL_OFISISTEMA, {
+                tictukOrderId: payload.tictukOrderId,
+                apiStoreId: payload.apiStoreId,
+                orderItemsLength: Array.isArray(payload.orderItems) ? payload.orderItems.length : 0,
+            });
+
             const respuesta = await firstValueFrom(
                 this.http.post(URL_OFISISTEMA, payload, {
                     headers: { 'Content-Type': 'application/json' },
@@ -115,12 +131,18 @@ export class OfisistemaCrearOrdenService {
                 }),
             );
 
+            console.log('[crearOrden][OfiSistema] respuesta HTTP', {
+                status: (respuesta as any)?.status,
+                data: (respuesta as any)?.data,
+            });
+
             const linkSeguimiento = this.extraerLink(respuesta.data);
             this.logger.log(`OfiSistema orden creada ${entrada.shopifyOrdenNombre}: ${linkSeguimiento ?? 'sin link'}`);
             return { exito: true, linkSeguimiento };
         } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
             this.logger.error(`Error OfiSistema (no crítico): ${msg}`);
+            console.log('[crearOrden][OfiSistema] error', error);
             return { exito: false, error: msg };
         }
     }
@@ -139,13 +161,13 @@ export class OfisistemaCrearOrdenService {
 
             // integrationId incluye el objNum del combo cuando el producto tiene variaciones.
             const integrationId = esSimple
-                ? item.idOfisistema
-                : `${item.idOfisistema}|CM${item.objNum ?? ''}`;
+                ? item.idOfisistema 
+                : `${item.idOfisistema }|CM${item.objNum ?? ''}`;
 
             // Cada unidad del mismo producto es un item separado en OfiSistema.
             for (let i = 0; i < (item.cantidad ?? 1); i++) {
                 resultado.push({
-                    tictukItemId: `${metodoEntrega}${item.idOfisistema}`,
+                    tictukItemId: `${metodoEntrega}${item.idOfisistema }`,
                     integrationId,
                     taxCode: null,
                     title: item.nombre,

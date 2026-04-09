@@ -16,6 +16,7 @@ export class NotificarCarritoWebController {
     @Post('notificar-carrito')
     @HttpCode(HttpStatus.OK)
     async postNotificarCarrito(@Body() dto: NotificarCarritoWhatsappDto): Promise<{ ok: true }> {
+        console.log('dto', dto);
         return this.notificarCarritoWeb.ejecutar(dto);
     }
 }

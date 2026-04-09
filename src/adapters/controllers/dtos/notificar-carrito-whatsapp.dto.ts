@@ -119,8 +119,7 @@ export class NotificarCarritoWhatsappDto {
     @MaxLength(20)
     tipoEntregaOrden?: string;
     
-    // JSON serializado con los items completos (precios, IDs de OfiSistema, estructura pizza/otros)
-    // y la dirección de entrega formateada para Shopify. El frontend ya tiene todos estos datos.
+    // JSON opcional: si no se envía, el backend arma `datosOrden` desde `lineas` + `subtotalProductos`.
     @IsOptional()
     @IsString()
     @MaxLength(65536)
