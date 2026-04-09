@@ -26,8 +26,12 @@ interface CuerpoWebhookMeta {
           type?: string;
           text?: { body?: string };
 
-          // Cuando el usuario toca un boton de tipo interactive
-          interactive?: { type?: string; button_reply?: { id?: string; title?: string; }; };
+          // Respuestas de mensajes interactivos: botones o lista.
+          interactive?: {
+            type?: string;
+            button_reply?: { id?: string; title?: string };
+            list_reply?: { id?: string; title?: string; description?: string };
+          };
 
           // Cuando el usuario comparte ubicacion
           location?: { latitude?: number; longitude?: number; name?: string; address?: string; };
@@ -99,9 +103,21 @@ export function extraerMensajesEntrantesNormalizados(
         // PASO 1 : Extraer texto si corresponde
         const textoPlano = tipo === 'texto' ? m.text?.body : undefined;
 
-        // PASO 2 : Extraer boton si corresponde (interactive/button reply)
-        const idBotonRespuesta = tipo === 'interactivo' ? m.interactive?.button_reply?.id : undefined;
-        const tituloBotonRespuesta = tipo === 'interactivo' ? m.interactive?.button_reply?.title : undefined;
+        // PASO 2: interactive puede ser button_reply o list_reply; unificamos en id/título para el flujo.
+        const idLista = tipo === 'interactivo' && m.interactive?.type === 'list_reply'
+          ? m.interactive?.list_reply?.id
+          : undefined;
+        const tituloLista = tipo === 'interactivo' && m.interactive?.type === 'list_reply'
+          ? m.interactive?.list_reply?.title
+          : undefined;
+        const idBotonRespuesta =
+          tipo === 'interactivo'
+            ? (idLista ?? m.interactive?.button_reply?.id)
+            : undefined;
+        const tituloBotonRespuesta =
+          tipo === 'interactivo'
+            ? (tituloLista ?? m.interactive?.button_reply?.title)
+            : undefined;
 
         // PASO 3 : Extraer ubicacion si corresponde (location)
         const ubicacion = tipo === 'ubicacion' ? {
@@ -115,7 +131,7 @@ export function extraerMensajesEntrantesNormalizados(
         const ubicacionValida = ubicacion && Number.isFinite(ubicacion.latitude) && Number.isFinite(ubicacion.longitude) ? ubicacion : undefined;
 
         // PASO 4 : Si todo esta OK, agregar al resultado
-        if(textoPlano || idBotonRespuesta || ubicacionValida){
+        if (textoPlano || idBotonRespuesta || ubicacionValida) {
           resultado.push({
             idMensajeWhatsapp: idMsg,
             numeroWhatsappOrigen: desde,

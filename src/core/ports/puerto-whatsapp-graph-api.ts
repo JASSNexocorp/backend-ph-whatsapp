@@ -4,6 +4,13 @@
  */
 export const TOKEN_PUERTO_WHATSAPP_GRAPH_API = 'TOKEN_PUERTO_WHATSAPP_GRAPH_API';
 
+/** Fila de un mensaje interactivo tipo lista (Cloud API de Meta). */
+export interface WhatsappFilaMensajeLista {
+    id: string;
+    titulo: string;
+    descripcion?: string;
+}
+
 /**
  * Puerto para enviar acciones/mensajes salientes por WhatsApp Graph API de Meta.
  * Se modela como puerto para que el core no dependa de HTTP/Nest/Axios.
@@ -45,5 +52,21 @@ export interface PuertoWhatsappGraphApi {
         footer: string,
         textoBoton: string,
         urlBoton: string,
+    ): Promise<void>;
+
+    /**
+     * Mensaje interactivo tipo lista: un botón abre hasta 10 filas (en total, todas las secciones).
+     * El id de cada fila vuelve en el webhook como list_reply.
+     */
+    enviarMensajeListaInteractiva(
+        numeroDestino: string,
+        entrada: {
+            textoEncabezado?: string;
+            textoCuerpo: string;
+            textoPie?: string;
+            textoBotonAccion: string;
+            tituloSeccion: string;
+            filas: WhatsappFilaMensajeLista[];
+        },
     ): Promise<void>;
 }

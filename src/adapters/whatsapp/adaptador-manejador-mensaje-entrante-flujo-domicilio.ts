@@ -30,6 +30,9 @@ import {
 // Número de teléfono del agente humano que atiende consultas especiales.
 const TELEFONO_AGENTE = '+591 78452415';
 
+// Prefijo del id de fila en la lista de sucursales (retiro local); el webhook devuelve el id completo.
+const PREFIJO_ID_LISTA_SUCURSAL_RETIRO = 'sr_';
+
 // Nombres de los días de la semana (índice 1 = Lunes, 7 = Domingo).
 const NOMBRES_DIAS: Record<number, string> = {
     1: 'Lun',
@@ -50,6 +53,7 @@ type NodoConversacion =
     | 'confirmar_indicaciones'
     | 'otras_opciones'
     | 'esperando_confirmacion_sucursal'
+    | 'esperando_sucursal_retiro_local'
     // Recolección de datos del cliente (primer pedido o edición desde Otras opciones).
     | 'esperando_nombre_cliente'
     | 'esperando_email_cliente'
@@ -66,10 +70,10 @@ type NodoConversacion =
 
 /**
  * Handler de flujo: interpreta el mensaje entrante según el nodo_actual y responde.
- * Implementa el subflujo completo de pedido a domicilio:
- * Menú principal → Tipo pedido → Ubicación (con validación de cobertura) →
- * Indicaciones → Confirmación → Asignación de sucursal → Link de catálogo.
- * También maneja el subflujo "Otras opciones" con listado de restaurantes.
+ * Implementa el subflujo de pedido a domicilio y retiro en local:
+ * Domicilio: menú → tipo → ubicación (cobertura) → indicaciones → confirmación → sucursal → catálogo.
+ * Retiro local: menú → tipo → lista interactiva de sucursales → validación de servicio → mismo resumen y catálogo (JWT retiro_local).
+ * También maneja "Otras opciones" con listado de restaurantes en texto.
  */
 @Injectable()
 export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoManejadorMensajeEntrante {
@@ -196,6 +200,10 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         }
         if (nodo === 'esperando_confirmacion_sucursal') {
             await this.manejarConfirmacionSucursalSinServicio(mensaje, conversacion);
+            return;
+        }
+        if (nodo === 'esperando_sucursal_retiro_local') {
+            await this.manejarSeleccionSucursalRetiroLocal(mensaje, conversacion);
             return;
         }
 
@@ -406,12 +414,30 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         }
 
         if (mensaje.idBotonPresionado === 'retiro_local') {
-            // Por el momento solo atendemos domicilio; informamos y volvemos al menú de tipo.
-            await this.enviarTexto(
-                mensaje.numeroWhatsappOrigen,
-                'Por el momento solo estamos atendiendo pedidos A Domicilio. 🛵',
-            );
-            await this.enviarMenuTipoPedido(mensaje.numeroWhatsappOrigen);
+            // Misma regla que domicilio: sin nombre no pedimos sucursal hasta tener identificación.
+            const cliente = await this.repoCliente.findOne({
+                where: { numeroWhatsapp: mensaje.numeroWhatsappOrigen },
+            });
+            if (!cliente?.nombre) {
+                await this.enviarTexto(
+                    mensaje.numeroWhatsappOrigen,
+                    [
+                        'Te solicitaremos 3 datos para la toma de tu pedido.',
+                        '',
+                        'Para poder tomar tu orden escribe únicamente tu *nombre completo*.',
+                        '',
+                        'Ejemplo: _José Sahonero_',
+                    ].join('\n'),
+                );
+                const carrito: any[] = Array.isArray(conversacion.carrito) ? [...(conversacion.carrito as any[])] : [];
+                const sinContexto = carrito.filter((x) => x?._contexto !== 'origen_recoleccion');
+                sinContexto.push({ _contexto: 'origen_recoleccion', valor: 'pre_pedido_retiro_local' });
+                conversacion.carrito = sinContexto as any;
+                conversacion.nodoActual = 'esperando_nombre_cliente';
+                await this.repoConversacion.save(conversacion);
+                return;
+            }
+            await this.enviarListaSucursalesParaRetiroLocal(mensaje.numeroWhatsappOrigen, conversacion);
             return;
         }
 
@@ -420,6 +446,169 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             'Por favor sigue el flujo para continuar con tu compra. 👨‍🍳🍕',
         );
         await this.enviarMenuTipoPedido(mensaje.numeroWhatsappOrigen);
+    }
+
+    // Indica si el JSON de sucursal marca retiro/recojo en local (misma idea que el filtro de domicilio).
+    private sucursalOfreceRetiroLocal(sucursal: WhatsappSucursalMenuItem): boolean {
+        return sucursal.servicios.some((servicio) => {
+            const s = servicio.toLowerCase();
+            if (s.includes('retiro') || s.includes('pickup') || s.includes('recojo')) {
+                return true;
+            }
+            if (s.includes('take away') || s.includes('takeaway')) {
+                return true;
+            }
+            // "local" como palabra (ej. "retiro local", "domicilio y local").
+            return /\blocal\b/.test(s);
+        });
+    }
+
+    // Acorta texto para descripción de fila de lista (Meta máx. 72).
+    private truncarTextoLista(descripcion: string, max: number): string {
+        const t = descripcion.trim();
+        if (t.length <= max) {
+            return t;
+        }
+        return `${t.slice(0, max - 1)}…`;
+    }
+
+    // Muestra hasta 10 sucursales activas en mensaje lista; el id de fila vuelve en el webhook.
+    private async enviarListaSucursalesParaRetiroLocal(
+        numeroDestino: string,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        const cache = this.tiendaInfo.obtenerInformacionTiendaEnCache();
+        const activas = (cache?.sucursales ?? [])
+            .filter((s) => s.estado)
+            .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+
+        if (!activas.length) {
+            await this.enviarTexto(
+                numeroDestino,
+                '😔 Por el momento no tenemos sucursales disponibles para retiro. Intenta más tarde.',
+            );
+            await this.enviarMenuTipoPedido(numeroDestino);
+            conversacion.nodoActual = 'seleccionar_tipo_pedido';
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        const maxFilasListaWhatsapp = 10;
+        const elegibles = activas.slice(0, maxFilasListaWhatsapp);
+        if (activas.length > maxFilasListaWhatsapp) {
+            this.logger.warn(
+                `Retiro local: hay ${activas.length} sucursales; WhatsApp admite ${maxFilasListaWhatsapp} filas. Se listan las primeras por nombre.`,
+            );
+        }
+
+        let cuerpo =
+            'Elegí la *sucursal* donde retirarás tu pedido 🚶🏻‍♂️\n\nTocá el botón y seleccioná una opción de la lista.';
+        if (activas.length > maxFilasListaWhatsapp) {
+            cuerpo += `\n\n_(Mostramos ${maxFilasListaWhatsapp} de ${activas.length}. Si no ves la tuya, escribí *menu* o llamá al ${TELEFONO_AGENTE}.)_`;
+        }
+
+        const filas = elegibles.map((sucursal) => {
+            const horarios = this.formatearTurnos(sucursal.turnos);
+            const descripcionBase = [horarios, sucursal.localizacion].filter(Boolean).join(' · ');
+            return {
+                id: `${PREFIJO_ID_LISTA_SUCURSAL_RETIRO}${sucursal.id_ofisistema}`,
+                titulo: sucursal.nombre.trim(),
+                descripcion: descripcionBase ? this.truncarTextoLista(descripcionBase, 72) : undefined,
+            };
+        });
+
+        await this.enviarMensajeLista(numeroDestino, {
+            textoEncabezado: 'Retiro en local',
+            textoCuerpo: cuerpo,
+            textoPie: 'Escribí menu para volver al inicio',
+            textoBotonAccion: 'Ver sucursales',
+            tituloSeccion: 'Sucursales',
+            filas,
+        });
+
+        conversacion.nodoActual = 'esperando_sucursal_retiro_local';
+        await this.repoConversacion.save(conversacion);
+    }
+
+    // Respuesta a la lista: valida servicio de retiro y envía el mismo resumen + enlace al menú que en domicilio.
+    private async manejarSeleccionSucursalRetiroLocal(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        const numero = mensaje.numeroWhatsappOrigen;
+
+        if (mensaje.tipo !== 'interactivo' || !mensaje.idBotonPresionado) {
+            await this.enviarTexto(
+                numero,
+                'Por favor abrí el menú de la lista y elegí una sucursal, o escribí *menu* para volver al inicio. 😊',
+            );
+            return;
+        }
+
+        const idSeleccion = mensaje.idBotonPresionado;
+        if (!idSeleccion.startsWith(PREFIJO_ID_LISTA_SUCURSAL_RETIRO)) {
+            await this.enviarTexto(numero, 'Elegí una sucursal de la lista para continuar. 😊');
+            return;
+        }
+
+        const idOfisistema = idSeleccion.slice(PREFIJO_ID_LISTA_SUCURSAL_RETIRO.length).trim();
+        const cache = this.tiendaInfo.obtenerInformacionTiendaEnCache();
+        const sucursal = (cache?.sucursales ?? []).find((s) => s.id_ofisistema === idOfisistema && s.estado);
+
+        if (!sucursal) {
+            await this.enviarTexto(
+                numero,
+                'No encontramos esa sucursal. Te mostramos el listado otra vez.',
+            );
+            await this.enviarListaSucursalesParaRetiroLocal(numero, conversacion);
+            return;
+        }
+
+        const sucursalConDistancia: WhatsappSucursalConDistanciaKm = { ...sucursal, distanciaKm: 0 };
+
+        const normalizarOrigenPrePedido = () => {
+            const carrito: any[] = Array.isArray(conversacion.carrito) ? [...(conversacion.carrito as any[])] : [];
+            const sinOrigen = carrito.filter((x) => x?._contexto !== 'origen_recoleccion');
+            sinOrigen.push({ _contexto: 'origen_recoleccion', valor: 'pre_pedido' });
+            conversacion.carrito = sinOrigen as any;
+        };
+
+        if (this.sucursalOfreceRetiroLocal(sucursal)) {
+            normalizarOrigenPrePedido();
+            await this.enviarResumenSucursalAsignada(numero, sucursalConDistancia, 'retiro_local_validado');
+            await this.enviarLinkCatalogo(numero, sucursalConDistancia, 'retiro_local');
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        const carrito: any[] = Array.isArray(conversacion.carrito) ? (conversacion.carrito as any[]) : [];
+        const sinContexto = carrito.filter((x) => x?._contexto !== 'sucursal_asignada');
+        sinContexto.push({
+            _contexto: 'sucursal_asignada',
+            modoConfirmacionSucursal: 'retiro',
+            sucursalId: sucursal.id_ofisistema,
+            nombre: sucursal.nombre,
+            sucursal: sucursalConDistancia,
+        });
+        conversacion.carrito = sinContexto as any;
+
+        await this.enviarBotones(
+            numero,
+            [
+                `😔 La sucursal *${sucursal.nombre}* no tiene habilitado el *retiro en local* en este canal por ahora.`,
+                '',
+                '¿Qué deseas hacer?',
+            ].join('\n'),
+            'Seleccioná una opción para continuar.',
+            [
+                { id: 'continuar_igual', texto: 'Continuar de todas formas' },
+                { id: 'hablar_agente', texto: 'Hablar con alguien' },
+                { id: 'cambiar_tipo_pedido', texto: 'Cambiar tipo de pedido' },
+            ],
+        );
+
+        conversacion.nodoActual = 'esperando_confirmacion_sucursal';
+        await this.repoConversacion.save(conversacion);
     }
 
     // Recepción de ubicación: valida cobertura antes de avanzar al siguiente paso.
@@ -577,17 +766,27 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         conversacion: WhatsAppConversacionEntity,
     ): Promise<void> {
         if (mensaje.idBotonPresionado === 'continuar_igual') {
-            // El cliente acepta continuar aunque la sucursal no tenga domicilio habilitado.
             const sucursal = this.obtenerSucursalGuardadaDelCarrito(conversacion.carrito as any[]);
+            const itemCarrito = (conversacion.carrito as any[])?.find((x) => x?._contexto === 'sucursal_asignada');
+            const modo = itemCarrito?.modoConfirmacionSucursal === 'retiro' ? 'retiro' : 'domicilio';
+
             if (sucursal) {
-                await this.enviarResumenSucursalAsignada(
-                    mensaje.numeroWhatsappOrigen,
-                    sucursal,
-                    'continua_sin_domicilio',
-                );
-                await this.enviarLinkCatalogo(mensaje.numeroWhatsappOrigen, sucursal);
+                if (modo === 'retiro') {
+                    await this.enviarResumenSucursalAsignada(
+                        mensaje.numeroWhatsappOrigen,
+                        sucursal,
+                        'continua_sin_retiro_local',
+                    );
+                    await this.enviarLinkCatalogo(mensaje.numeroWhatsappOrigen, sucursal, 'retiro_local');
+                } else {
+                    await this.enviarResumenSucursalAsignada(
+                        mensaje.numeroWhatsappOrigen,
+                        sucursal,
+                        'continua_sin_domicilio',
+                    );
+                    await this.enviarLinkCatalogo(mensaje.numeroWhatsappOrigen, sucursal, 'domicilio');
+                }
             } else {
-                // Caso defensivo: si no hay sucursal en carrito por algún motivo, reiniciamos búsqueda.
                 await this.iniciarAsignacionSucursal(mensaje.numeroWhatsappOrigen, conversacion);
             }
             return;
@@ -690,6 +889,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         const sinContexto = carrito.filter((x) => x?._contexto !== 'sucursal_asignada');
         sinContexto.push({
             _contexto: 'sucursal_asignada',
+            modoConfirmacionSucursal: 'domicilio',
             sucursalId: sucursalMasCercana.id_ofisistema,
             nombre: sucursalMasCercana.nombre,
             sucursal: sucursalMasCercana,
@@ -814,7 +1014,11 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
     private async enviarResumenSucursalAsignada(
         numeroDestino: string,
         sucursal: WhatsappSucursalConDistanciaKm,
-        variante: 'domicilio_validado' | 'continua_sin_domicilio',
+        variante:
+            | 'domicilio_validado'
+            | 'continua_sin_domicilio'
+            | 'retiro_local_validado'
+            | 'continua_sin_retiro_local',
     ): Promise<void> {
         const horarios = this.formatearTurnos(sucursal.turnos);
 
@@ -825,6 +1029,37 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
                     '🎉 ¡Listo! La sucursal que te atenderá es:',
                     '',
                     `🏪 *${sucursal.nombre}*`,
+                    '',
+                    '🕐 *Horarios:*',
+                    horarios,
+                ].join('\n'),
+            );
+            return;
+        }
+
+        if (variante === 'retiro_local_validado') {
+            await this.enviarTexto(
+                numeroDestino,
+                [
+                    '🎉 ¡Listo! La sucursal donde retirarás tu pedido es:',
+                    '',
+                    `🏪 *${sucursal.nombre}*`,
+                    '',
+                    '🕐 *Horarios:*',
+                    horarios,
+                ].join('\n'),
+            );
+            return;
+        }
+
+        if (variante === 'continua_sin_retiro_local') {
+            await this.enviarTexto(
+                numeroDestino,
+                [
+                    '⚠️ Seguimos con tu pedido.',
+                    '',
+                    `🏪 *${sucursal.nombre}*`,
+                    'Esta sucursal no tenía retiro en local habilitado; acordaste continuar igual.',
                     '',
                     '🕐 *Horarios:*',
                     horarios,
@@ -853,8 +1088,9 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
     private async enviarLinkCatalogo(
         numeroDestino: string,
         sucursal: WhatsappSucursalConDistanciaKm,
+        tipoEntregaJwt: string = 'domicilio',
     ): Promise<void> {
-        await this.enviarEnlaceMenuConJwt(numeroDestino, sucursal.nombre.trim(), 'domicilio');
+        await this.enviarEnlaceMenuConJwt(numeroDestino, sucursal.nombre.trim(), tipoEntregaJwt);
     }
 
     /**
@@ -1123,6 +1359,22 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         await this.whatsapp.enviarSolicitudUbicacion(numeroDestino, textoCuerpo);
     }
 
+    // Lista interactiva de Meta (retiro en local): mismo patrón de indicador que botones/texto.
+    private async enviarMensajeLista(
+        numeroDestino: string,
+        entrada: {
+            textoEncabezado?: string;
+            textoCuerpo: string;
+            textoPie?: string;
+            textoBotonAccion: string;
+            tituloSeccion: string;
+            filas: Array<{ id: string; titulo: string; descripcion?: string }>;
+        },
+    ): Promise<void> {
+        await this.whatsapp.mostrarIndicadorEscritura(this.idMensajeActual);
+        await this.whatsapp.enviarMensajeListaInteractiva(numeroDestino, entrada);
+    }
+
     // ─── NUEVOS MÉTODOS: BIENVENIDA CON IMAGEN ────────────────────────────────────
 
     // Envía la imagen de bienvenida (si está configurada) seguida del menú principal.
@@ -1274,6 +1526,15 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             );
             conversacion.nodoActual = 'esperando_email_cliente';
             await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        if (origen === 'pre_pedido_retiro_local') {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                `✅ Gracias, *${nombre}*. Elegí dónde retirás tu pedido.`,
+            );
+            await this.enviarListaSucursalesParaRetiroLocal(mensaje.numeroWhatsappOrigen, conversacion);
             return;
         }
 
@@ -2033,10 +2294,20 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         return carrito.find((x) => x?._contexto === 'menu_web_activo') ?? null;
     }
 
-    // Lee el origen del flujo de recolección de datos: 'pre_pedido' (orden) o 'editar_datos' (otras opciones).
-    private obtenerOrigenRecoleccion(carrito: any[]): 'pre_pedido' | 'editar_datos' {
-        if (!Array.isArray(carrito)) return 'pre_pedido';
+    // Origen del subflujo de datos: pedido a domicilio, retiro en local u edición desde Otras opciones.
+    private obtenerOrigenRecoleccion(
+        carrito: any[],
+    ): 'pre_pedido' | 'pre_pedido_retiro_local' | 'editar_datos' {
+        if (!Array.isArray(carrito)) {
+            return 'pre_pedido';
+        }
         const ctx = carrito.find((x) => x?._contexto === 'origen_recoleccion');
-        return ctx?.valor === 'editar_datos' ? 'editar_datos' : 'pre_pedido';
+        if (ctx?.valor === 'editar_datos') {
+            return 'editar_datos';
+        }
+        if (ctx?.valor === 'pre_pedido_retiro_local') {
+            return 'pre_pedido_retiro_local';
+        }
+        return 'pre_pedido';
     }
 }

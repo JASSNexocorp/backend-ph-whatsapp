@@ -2,7 +2,10 @@ import { HttpService } from "@nestjs/axios";
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { firstValueFrom } from "rxjs";
-import { PuertoWhatsappGraphApi } from "../../core/ports/puerto-whatsapp-graph-api";
+import {
+  PuertoWhatsappGraphApi,
+  WhatsappFilaMensajeLista,
+} from "../../core/ports/puerto-whatsapp-graph-api";
 
 /**
  *  Implementacion HTTP del puerto usando WhatsApp Graph API de Meta
@@ -142,6 +145,69 @@ export class WhatsAppGraphApiService implements PuertoWhatsappGraphApi {
         { headers: this.headers }
       )
     )
+  }
+
+  async enviarMensajeListaInteractiva(
+    numeroDestino: string,
+    entrada: {
+      textoEncabezado?: string;
+      textoCuerpo: string;
+      textoPie?: string;
+      textoBotonAccion: string;
+      tituloSeccion: string;
+      filas: WhatsappFilaMensajeLista[];
+    },
+  ): Promise<void> {
+    // Meta: máximo 10 filas en total entre todas las secciones.
+    const filas = entrada.filas.slice(0, 10);
+
+    const truncar = (s: string, max: number) => (s.length <= max ? s : s.slice(0, max - 1) + '…');
+
+    const rows = filas.map((f) => ({
+      id: truncar(f.id.trim(), 200),
+      title: truncar(f.titulo.trim(), 24),
+      ...(f.descripcion?.trim()
+        ? { description: truncar(f.descripcion.trim(), 72) }
+        : {}),
+    }));
+
+    const interactive: Record<string, unknown> = {
+      type: 'list',
+      body: { text: truncar(entrada.textoCuerpo.trim(), 4096) },
+      action: {
+        button: truncar(entrada.textoBotonAccion.trim(), 20),
+        sections: [
+          {
+            title: truncar(entrada.tituloSeccion.trim(), 24),
+            rows,
+          },
+        ],
+      },
+    };
+
+    const encabezado = entrada.textoEncabezado?.trim();
+    if (encabezado) {
+      interactive.header = { type: 'text', text: truncar(encabezado, 60) };
+    }
+    const pie = entrada.textoPie?.trim();
+    if (pie) {
+      interactive.footer = { text: truncar(pie, 60) };
+    }
+
+    const url = `${this.baseUrl}/${this.versionApi}/${this.phoneNumberId}/messages`;
+    await firstValueFrom(
+      this.http.post(
+        url,
+        {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: numeroDestino,
+          type: 'interactive',
+          interactive,
+        },
+        { headers: this.headers },
+      ),
+    );
   }
 
   // Envía un mensaje interactivo de tipo cta_url: un botón que abre una URL externa.
