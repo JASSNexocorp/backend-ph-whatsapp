@@ -1797,19 +1797,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoPedido implements PuertoManej
             return;
         }
 
-        if (metodoPago === 'qr') {
-            await this.enviarTexto(
-                numero,
-                [
-                    '📱 Escribí el *ID de tu pago QR* si aplica.',
-                    'Si no tenés uno, escribí *0*.',
-                ].join('\n'),
-            );
-            conversacion.nodoActual = 'esperando_id_qr_pago';
-            await this.repoConversacion.save(conversacion);
-            return;
-        }
-
+        // Efectivo y QR: mismo flujo que efectivo — sin pedir datos extra (no ID de pago).
         await this.mostrarResumenYConfirmarPedido(numero, conversacion);
     }
 
@@ -1857,13 +1845,16 @@ export class AdaptadorManejadorMensajeEntranteFlujoPedido implements PuertoManej
         this.aplicarParcheMetodoPagoCarrito(conversacion, { tarjetaPrimeros4: t });
         await this.enviarTexto(
             mensaje.numeroWhatsappOrigen,
-            'Ahora escribí los *últimos 4 dígitos* de tu tarjeta:',
+            [
+                'Si querés, escribí los *últimos 4 dígitos* de tu tarjeta (opcional).',
+                'Si preferís no compartirlos, escribí *0* y pasamos al resumen.',
+            ].join('\n'),
         );
         conversacion.nodoActual = 'esperando_tarjeta_ultimos_4';
         await this.repoConversacion.save(conversacion);
     }
 
-    // Segundo paso tarjeta: últimos 4 dígitos y pasamos al resumen final.
+    // Segundo paso tarjeta: últimos 4 opcionales (0 = omitir) o pasamos al resumen final.
     private async manejarEsperandoTarjetaUltimos4(
         mensaje: MensajeEntranteWhatsappNormalizado,
         conversacion: WhatsAppConversacionEntity,
@@ -1871,15 +1862,29 @@ export class AdaptadorManejadorMensajeEntranteFlujoPedido implements PuertoManej
         if (mensaje.tipo !== 'texto') {
             await this.enviarTexto(
                 mensaje.numeroWhatsappOrigen,
-                'Por favor escribí solo los 4 números. 💳',
+                'Por favor escribí solo los 4 números o *0* si no querés dar los últimos cuatro. 💳',
             );
             return;
         }
         const t = (mensaje.textoPlano ?? '').trim().replace(/\s/g, '');
+        // Un solo 0: el cliente elige no aportar últimos 4 — no guardamos un valor inventado en BD ni en el pedido.
+        if (t === '0') {
+            const cliente = await this.repoCliente.findOne({
+                where: { numeroWhatsapp: mensaje.numeroWhatsappOrigen },
+            });
+            if (cliente) {
+                cliente.tarjetaUltimos4 = null;
+                await this.repoCliente.save(cliente);
+            }
+            // Cadena vacía en carrito: tarjetaUltimos4 ?? cliente no reutiliza datos viejos del cliente.
+            this.aplicarParcheMetodoPagoCarrito(conversacion, { tarjetaUltimos4: '' });
+            await this.mostrarResumenYConfirmarPedido(mensaje.numeroWhatsappOrigen, conversacion);
+            return;
+        }
         if (!/^\d{4}$/.test(t)) {
             await this.enviarTexto(
                 mensaje.numeroWhatsappOrigen,
-                'Debés enviar *exactamente 4 dígitos* (solo números).',
+                'Enviá *4 dígitos* (solo números) o *0* si no querés dar los últimos cuatro.',
             );
             return;
         }
@@ -1894,21 +1899,14 @@ export class AdaptadorManejadorMensajeEntranteFlujoPedido implements PuertoManej
         await this.mostrarResumenYConfirmarPedido(mensaje.numeroWhatsappOrigen, conversacion);
     }
 
-    // Opcional: ID de pago QR antes del resumen.
+    // Compatibilidad: conversaciones que quedaron en el nodo antiguo (cuando se pedía ID QR).
+    // Ya no se pide ese dato — llevamos al resumen y limpiamos idQr en el carrito.
     private async manejarEsperandoIdQrPago(
         mensaje: MensajeEntranteWhatsappNormalizado,
         conversacion: WhatsAppConversacionEntity,
     ): Promise<void> {
-        if (mensaje.tipo !== 'texto') {
-            await this.enviarTexto(
-                mensaje.numeroWhatsappOrigen,
-                'Escribí el ID como texto o *0* si no aplica. 📱',
-            );
-            return;
-        }
-        const raw = (mensaje.textoPlano ?? '').trim();
-        const idQr = raw === '0' || raw === '' ? '' : raw.slice(0, 200);
-        this.aplicarParcheMetodoPagoCarrito(conversacion, { idQr });
+        // mensaje solo se usa para el destino; el contenido ya no se interpreta (flujo QR sin ID).
+        this.aplicarParcheMetodoPagoCarrito(conversacion, { idQr: '' });
         await this.mostrarResumenYConfirmarPedido(mensaje.numeroWhatsappOrigen, conversacion);
     }
 
@@ -2300,21 +2298,21 @@ export class AdaptadorManejadorMensajeEntranteFlujoPedido implements PuertoManej
         const botones: Array<{ id: string; texto: string }> = [];
         // Solo se agrega cada botón si el método está habilitado (o si el campo no existe en el JSON).
         if (!metodosConfig || metodosConfig.efectivo) {
-            botones.push({ id: 'pago_efectivo', texto: '💵 Efectivo' });
+            botones.push({ id: 'pago_efectivo', texto: 'Efectivo' });
         }
         if (!metodosConfig || metodosConfig.tarjeta_credito) {
-            botones.push({ id: 'pago_tarjeta', texto: '💳 Tarjeta' });
+            botones.push({ id: 'pago_tarjeta', texto: 'Tarjeta' });
         }
         if (!metodosConfig || metodosConfig.qr) {
-            botones.push({ id: 'pago_qr', texto: '📱 QR' });
+            botones.push({ id: 'pago_qr', texto: 'QR' });
         }
 
         // Fallback: si por error de configuración no quedó ningún método, mostramos los tres.
         if (botones.length === 0) {
             botones.push(
-                { id: 'pago_efectivo', texto: '💵 Efectivo' },
-                { id: 'pago_tarjeta', texto: '💳 Tarjeta' },
-                { id: 'pago_qr', texto: '📱 QR' },
+                { id: 'pago_efectivo', texto: 'Efectivo' },
+                { id: 'pago_tarjeta', texto: 'Tarjeta' },
+                { id: 'pago_qr', texto: 'QR' },
             );
         }
 
