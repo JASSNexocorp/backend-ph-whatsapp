@@ -30,8 +30,8 @@ import {
 // Número de teléfono del agente humano que atiende consultas especiales.
 const TELEFONO_AGENTE = '+591 78452415';
 
-// Prefijo del id de fila en la lista de sucursales (retiro local); el webhook devuelve el id completo.
-const PREFIJO_ID_LISTA_SUCURSAL_RETIRO = 'sr_';
+// Prefijo + id en base64url: evita caracteres que Meta rechaza en row id (error 131009).
+const PREFIJO_ID_LISTA_SUCURSAL_RETIRO = 'sr64_';
 
 // Nombres de los días de la semana (índice 1 = Lunes, 7 = Domingo).
 const NOMBRES_DIAS: Record<number, string> = {
@@ -69,16 +69,17 @@ type NodoConversacion =
     | 'confirmando_pedido_final';
 
 /**
- * Handler de flujo: interpreta el mensaje entrante según el nodo_actual y responde.
- * Implementa el subflujo de pedido a domicilio y retiro en local:
+ * Handler principal del flujo de pedido por WhatsApp (domicilio y retiro en local).
+ * Interpreta el mensaje entrante según nodo_actual y responde.
+ * Incluye subflujos:
  * Domicilio: menú → tipo → ubicación (cobertura) → indicaciones → confirmación → sucursal → catálogo.
  * Retiro local: menú → tipo → lista interactiva de sucursales → validación de servicio → mismo resumen y catálogo (JWT retiro_local).
  * También maneja "Otras opciones" con listado de restaurantes en texto.
  */
 @Injectable()
-export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoManejadorMensajeEntrante {
+export class AdaptadorManejadorMensajeEntranteFlujoPedido implements PuertoManejadorMensajeEntrante {
 
-    private readonly logger = new Logger(AdaptadorManejadorMensajeEntranteFlujoDomicilio.name);
+    private readonly logger = new Logger(AdaptadorManejadorMensajeEntranteFlujoPedido.name);
 
     // Almacena el ID del mensaje entrante actual para usarlo en el indicador de escritura.
     // Se reasigna al inicio de cada llamada a manejar(), antes de cualquier envío.
@@ -472,6 +473,29 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         return `${t.slice(0, max - 1)}…`;
     }
 
+    // Devuelve id_ofisistema desde el list_reply.id o null si no es una fila de retiro local.
+    private decodificarIdOfisistemaDesdeListReplyRetiro(idSeleccion: string): string | null {
+        const raw = idSeleccion?.trim() ?? '';
+        if (raw.startsWith(PREFIJO_ID_LISTA_SUCURSAL_RETIRO)) {
+            const b64 = raw.slice(PREFIJO_ID_LISTA_SUCURSAL_RETIRO.length).trim();
+            if (!b64) {
+                return null;
+            }
+            try {
+                return Buffer.from(b64, 'base64url').toString('utf8');
+            } catch {
+                return null;
+            }
+        }
+        // Compatibilidad: listas antiguas sr_<id_ofisistema en claro>
+        const legado = 'sr_';
+        if (raw.startsWith(legado)) {
+            const id = raw.slice(legado.length).trim();
+            return id.length > 0 ? id : null;
+        }
+        return null;
+    }
+
     // Muestra hasta 10 sucursales activas en mensaje lista; el id de fila vuelve en el webhook.
     private async enviarListaSucursalesParaRetiroLocal(
         numeroDestino: string,
@@ -501,21 +525,41 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             );
         }
 
+        // Los mensajes interactivos tipo lista no aceptan bien *negrita* / _cursiva_ como el chat normal → texto plano.
         let cuerpo =
-            'Elegí la *sucursal* donde retirarás tu pedido 🚶🏻‍♂️\n\nTocá el botón y seleccioná una opción de la lista.';
+            'Elegí la sucursal donde retirarás tu pedido 🚶🏻‍♂️\n\nTocá el botón y elegí una opción en la lista.';
         if (activas.length > maxFilasListaWhatsapp) {
-            cuerpo += `\n\n_(Mostramos ${maxFilasListaWhatsapp} de ${activas.length}. Si no ves la tuya, escribí *menu* o llamá al ${TELEFONO_AGENTE}.)_`;
+            cuerpo += `\n\n(Mostramos ${maxFilasListaWhatsapp} de ${activas.length}. Si no ves la tuya, escribí menu o llamá al ${TELEFONO_AGENTE}.)`;
         }
 
-        const filas = elegibles.map((sucursal) => {
+        const filas: Array<{ id: string; titulo: string; descripcion?: string }> = [];
+        for (const sucursal of elegibles) {
             const horarios = this.formatearTurnos(sucursal.turnos);
             const descripcionBase = [horarios, sucursal.localizacion].filter(Boolean).join(' · ');
-            return {
-                id: `${PREFIJO_ID_LISTA_SUCURSAL_RETIRO}${sucursal.id_ofisistema}`,
+            const idFila = `${PREFIJO_ID_LISTA_SUCURSAL_RETIRO}${Buffer.from(sucursal.id_ofisistema, 'utf8').toString('base64url')}`;
+            if (idFila.length > 200) {
+                this.logger.warn(
+                    `Lista retiro: id Ofi codificado supera 200 caracteres (${idFila.length}), se omite "${sucursal.nombre}".`,
+                );
+                continue;
+            }
+            filas.push({
+                id: idFila,
                 titulo: sucursal.nombre.trim(),
                 descripcion: descripcionBase ? this.truncarTextoLista(descripcionBase, 72) : undefined,
-            };
-        });
+            });
+        }
+
+        if (!filas.length) {
+            await this.enviarTexto(
+                numeroDestino,
+                '😔 No pudimos armar el listado de sucursales para WhatsApp. Escribí menu o intentá más tarde.',
+            );
+            await this.enviarMenuTipoPedido(numeroDestino);
+            conversacion.nodoActual = 'seleccionar_tipo_pedido';
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
 
         await this.enviarMensajeLista(numeroDestino, {
             textoEncabezado: 'Retiro en local',
@@ -546,12 +590,11 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         }
 
         const idSeleccion = mensaje.idBotonPresionado;
-        if (!idSeleccion.startsWith(PREFIJO_ID_LISTA_SUCURSAL_RETIRO)) {
+        const idOfisistema = this.decodificarIdOfisistemaDesdeListReplyRetiro(idSeleccion);
+        if (idOfisistema === null) {
             await this.enviarTexto(numero, 'Elegí una sucursal de la lista para continuar. 😊');
             return;
         }
-
-        const idOfisistema = idSeleccion.slice(PREFIJO_ID_LISTA_SUCURSAL_RETIRO.length).trim();
         const cache = this.tiendaInfo.obtenerInformacionTiendaEnCache();
         const sucursal = (cache?.sucursales ?? []).find((s) => s.id_ofisistema === idOfisistema && s.estado);
 
@@ -2022,7 +2065,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             const nombreSucursal = (contextoPedido.nombreSucursal ?? '').toLowerCase();
             const cacheInfoTienda = this.tiendaInfo.obtenerInformacionTiendaEnCache();
             const sucursalEnCache = cacheInfoTienda?.sucursales.find(
-                (s) => s.nombre.toLowerCase() === nombreSucursal,
+                (s) => s.estado && s.nombre.toLowerCase() === nombreSucursal,
             );
             if (sucursalEnCache) {
                 // Solo sobreescribimos si el valor no vino del frontend.
@@ -2214,27 +2257,28 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         ordenNombre: string,
         linkSeguimiento?: string,
     ): Promise<void> {
+        // Texto plano: en mensajes interactivos cta_url Meta es estricta (131009 con * o label > 20).
         const cuerpo = [
-            '🎉 *¡GRACIAS POR TU PREFERENCIA!*',
+            '🎉 ¡GRACIAS POR TU PREFERENCIA!',
             '',
             'Tu pedido fue registrado exitosamente. 🍕',
             '',
-            `📋 *Número de pedido:* ${ordenNombre}`,
+            `📋 Número de pedido: ${ordenNombre}`,
             '',
             linkSeguimiento
-                ? 'Podés rastrear el estado de tu pedido en el siguiente enlace 👇🏼'
+                ? 'Podés rastrear el estado de tu pedido con el botón de abajo 👇🏼'
                 : 'En breve recibirás confirmación de tu pedido.',
         ].join('\n');
 
-        const footer = 'Si deseás algo más, escribí *menu*.';
+        const footer = 'Si deseás algo más, escribí menu.';
 
         if (linkSeguimiento) {
-            // Si OfiSistema retornó un link, lo enviamos como botón CTA para mejor experiencia.
+            // display_text del CTA: máx. 20 caracteres (Cloud API) — no usar frases largas.
             await this.enviarCtaUrl(
                 numeroDestino,
                 cuerpo,
                 footer,
-                'Ver estado de tu pedido',
+                'Ver seguimiento',
                 linkSeguimiento,
             );
         } else {

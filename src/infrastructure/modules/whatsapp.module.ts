@@ -7,7 +7,7 @@ import { TOKEN_PUERTO_WHATSAPP_GRAPH_API } from '../../core/ports/puerto-whatsap
 import { NotificarCarritoWebController } from '../../adapters/controllers/notificar-carrito-web.controller';
 import { WhatsAppWebhookController } from '../../adapters/controllers/whatsapp-webhook.controller';
 import { AdaptadorDeduplicacionMensajesMemoria } from '../../adapters/whatsapp/adaptador-deduplicacion-mensajes-memoria';
-import { AdaptadorManejadorMensajeEntranteFlujoDomicilio } from '../../adapters/whatsapp/adaptador-manejador-mensaje-entrante-flujo-domicilio';
+import { AdaptadorManejadorMensajeEntranteFlujoPedido } from '../../adapters/whatsapp/adaptador-manejador-mensaje-entrante-flujo-pedido';
 import { NotificarCarritoWebWhatsappCasoUso } from '../../core/use-cases/notificar-carrito-web-whatsapp.caso-uso';
 import { ProcesarWebhookEntranteWhatsappCasoUso } from '../../core/use-cases/procesar-webhook-entrante-whatsapp.caso-uso';
 import { NotificarCarritoWebWhatsappService } from '../whatsapp/notificar-carrito-web-whatsapp.service';
@@ -53,7 +53,7 @@ import { GoogleGeocodingMapsService } from '../maps/google-geocoding-maps.servic
         AdaptadorDeduplicacionMensajesMemoria,
 
         // Handler de flujo de compra (menú, tipo pedido, domicilio, etc.).
-        AdaptadorManejadorMensajeEntranteFlujoDomicilio,
+        AdaptadorManejadorMensajeEntranteFlujoPedido,
 
         HorarioAtencionBotWhatsappService,
         ShopifyClienteSincronizacionService,
@@ -67,7 +67,7 @@ import { GoogleGeocodingMapsService } from '../maps/google-geocoding-maps.servic
             useFactory: (
                 config: ConfigService,
                 deduplicacion: AdaptadorDeduplicacionMensajesMemoria,
-                manejador: AdaptadorManejadorMensajeEntranteFlujoDomicilio,
+                manejador: AdaptadorManejadorMensajeEntranteFlujoPedido,
             ) =>
                 new ProcesarWebhookEntranteWhatsappCasoUso(
                     config.getOrThrow<string>('WHATSAPP_PHONE_NUMBER_ID'),
@@ -77,7 +77,7 @@ import { GoogleGeocodingMapsService } from '../maps/google-geocoding-maps.servic
             inject: [
                 ConfigService,
                 AdaptadorDeduplicacionMensajesMemoria,
-                AdaptadorManejadorMensajeEntranteFlujoDomicilio,
+                AdaptadorManejadorMensajeEntranteFlujoPedido,
             ],
         },
     ]

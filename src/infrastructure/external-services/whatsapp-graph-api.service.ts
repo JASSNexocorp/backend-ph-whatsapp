@@ -163,11 +163,17 @@ export class WhatsAppGraphApiService implements PuertoWhatsappGraphApi {
 
     const truncar = (s: string, max: number) => (s.length <= max ? s : s.slice(0, max - 1) + '…');
 
+    // El id de fila no puede llevar "…" ni caracteres raros: solo recorte duro (Meta 131009 si el id es inválido).
+    const truncarIdFila = (s: string, max: number) => s.trim().slice(0, max);
+
+    // Título y descripción: sin saltos de línea (la API de lista es estricta).
+    const unaLinea = (s: string) => s.replace(/\s+/g, ' ').trim();
+
     const rows = filas.map((f) => ({
-      id: truncar(f.id.trim(), 200),
-      title: truncar(f.titulo.trim(), 24),
+      id: truncarIdFila(f.id, 200),
+      title: truncar(unaLinea(f.titulo), 24),
       ...(f.descripcion?.trim()
-        ? { description: truncar(f.descripcion.trim(), 72) }
+        ? { description: truncar(unaLinea(f.descripcion), 72) }
         : {}),
     }));
 
@@ -219,6 +225,11 @@ export class WhatsAppGraphApiService implements PuertoWhatsappGraphApi {
     textoBoton: string,
     urlBoton: string,
   ): Promise<void> {
+    // Límites oficiales CTA URL (Cloud API): body 1024, footer 60, display_text 20 — si se pasan → 131009.
+    const textoCuerpo = body.trim().slice(0, 1024);
+    const textoPie = footer.trim().slice(0, 60);
+    const etiquetaBoton = textoBoton.trim().slice(0, 20);
+
     const url = `${this.baseUrl}/${this.versionApi}/${this.phoneNumberId}/messages`;
     await firstValueFrom(
       this.http.post(
@@ -230,14 +241,13 @@ export class WhatsAppGraphApiService implements PuertoWhatsappGraphApi {
           type: 'interactive',
           interactive: {
             type: 'cta_url',
-            body: { text: body },
-            // Meta admite CTA sin footer; si viene vacío no enviamos la clave.
-            ...(footer.trim() ? { footer: { text: footer } } : {}),
+            body: { text: textoCuerpo },
+            ...(textoPie ? { footer: { text: textoPie } } : {}),
             action: {
               name: 'cta_url',
               parameters: {
-                display_text: textoBoton,
-                url: urlBoton,
+                display_text: etiquetaBoton,
+                url: urlBoton.trim(),
               },
             },
           },

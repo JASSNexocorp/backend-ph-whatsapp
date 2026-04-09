@@ -212,7 +212,9 @@ export class NotificarCarritoWebWhatsappService {
             return { shopify, ofisistema };
         }
         const cache = this.tiendaInfo.obtenerInformacionTiendaEnCache();
-        const sucursal = cache?.sucursales.find((s) => s.nombre.toLowerCase() === nombre);
+        const sucursal = cache?.sucursales.find(
+            (s) => s.estado && s.nombre.toLowerCase() === nombre,
+        );
         if (sucursal) {
             shopify = shopify ?? sucursal.id_shopify ?? null;
             ofisistema = ofisistema ?? sucursal.id_ofisistema ?? null;
