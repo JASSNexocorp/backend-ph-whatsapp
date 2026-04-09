@@ -375,27 +375,60 @@ export class OfisistemaCrearOrdenService {
         return digitos;
     }
 
-    // Extrae el link de seguimiento de la respuesta de OfiSistema (puede ser texto o JSON).
+    // Extrae el link de seguimiento: la API suele devolver `data` como string JSON con `orderTrackingUrl`.
     private extraerLink(data: unknown): string | undefined {
+        const plano = this.aplanarCapasRespuestaOfisistema(data);
+        if (!plano) {
+            return undefined;
+        }
+        const str = (k: string): string | undefined => {
+            const v = plano[k];
+            return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+        };
+        return (
+            str('orderTrackingUrl') ??
+            str('orderTrakingUrl') ??
+            str('link') ??
+            str('url') ??
+            str('trackingUrl')
+        );
+    }
+
+    // Desenvuelve { success, data: "{\"orderTrackingUrl\":...}" } hasta un objeto con campos útiles.
+    private aplanarCapasRespuestaOfisistema(data: unknown): Record<string, unknown> | null {
+        if (data == null) {
+            return null;
+        }
         if (typeof data === 'string') {
-            if (data.startsWith('http')) return data;
+            if (data.trim().startsWith('http')) {
+                return { orderTrackingUrl: data.trim() };
+            }
             try {
-                const parsed = JSON.parse(data) as Record<string, unknown>;
-                return (
-                    (typeof parsed['link'] === 'string' ? parsed['link'] : undefined) ??
-                    (typeof parsed['url'] === 'string' ? parsed['url'] : undefined)
-                );
-            } catch { return undefined; }
+                const outer = JSON.parse(data) as Record<string, unknown>;
+                return this.extraerObjetoInternoDataOfi(outer);
+            } catch {
+                return null;
+            }
         }
-        if (data && typeof data === 'object') {
-            const d = data as Record<string, unknown>;
-            return (
-                (typeof d['link'] === 'string' ? d['link'] : undefined) ??
-                (typeof d['url'] === 'string' ? d['url'] : undefined) ??
-                (typeof d['trackingUrl'] === 'string' ? d['trackingUrl'] : undefined)
-            );
+        if (typeof data === 'object') {
+            return this.extraerObjetoInternoDataOfi(data as Record<string, unknown>);
         }
-        return undefined;
+        return null;
+    }
+
+    private extraerObjetoInternoDataOfi(outer: Record<string, unknown>): Record<string, unknown> | null {
+        const innerRaw = outer['data'];
+        if (typeof innerRaw === 'string') {
+            try {
+                return JSON.parse(innerRaw) as Record<string, unknown>;
+            } catch {
+                return outer;
+            }
+        }
+        if (innerRaw && typeof innerRaw === 'object') {
+            return innerRaw as Record<string, unknown>;
+        }
+        return outer;
     }
 
     // Mapea el método de pago interno al string que espera la API de OfiSistema.

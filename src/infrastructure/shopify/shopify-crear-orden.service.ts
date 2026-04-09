@@ -143,6 +143,7 @@ export class ShopifyCrearOrdenService {
                         entrada.nombreCliente,
                         entrada.telefonoCliente,
                         entrada.datos.direccionEntrega,
+                        entrada.apellidoCliente,
                     ),
                     customAttributes: this.construirAtributosPersonalizados(entrada),
                     metafields: this.construirMetafieldsOrden(entrada),
@@ -294,10 +295,12 @@ export class ShopifyCrearOrdenService {
         nombreCliente: string,
         telefono: string,
         direccion?: DireccionEntregaShopify,
+        apellidoCliente?: string | null,
     ): Record<string, string> {
         const partes = (nombreCliente ?? '').trim().split(/\s+/);
+        const ap = (apellidoCliente ?? '').trim();
         const firstName = partes[0] ?? '';
-        const lastName = partes.slice(1).join(' ') || '';
+        const lastName = ap || partes.slice(1).join(' ') || '';
         return {
             firstName,
             lastName,

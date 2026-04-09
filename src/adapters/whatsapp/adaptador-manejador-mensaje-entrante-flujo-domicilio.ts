@@ -22,7 +22,10 @@ import {
     DireccionOfiEntregaPayload,
     OfisistemaCrearOrdenService,
 } from "src/infrastructure/shopify/ofisistema-crear-orden.service";
-import { GoogleGeocodingMapsService } from "src/infrastructure/maps/google-geocoding-maps.service";
+import {
+    GoogleGeocodingMapsService,
+    type DetalleGeocodingEntrega,
+} from "src/infrastructure/maps/google-geocoding-maps.service";
 
 // Número de teléfono del agente humano que atiende consultas especiales.
 const TELEFONO_AGENTE = '+591 78452415';
@@ -1778,26 +1781,50 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             tipoEntregaRaw,
         });
 
-        const datosOrdenParaCrear = this.combinarDatosOrdenConUbicacionCarrito(
+        const datosOrdenBase = this.combinarDatosOrdenConUbicacionCarrito(
             contextoPedido.datosOrden,
             carritoActual,
         );
+
+        const ubicacionOrden = this.obtenerUbicacionDelCarrito(carritoActual);
+        const repartidorBloque = carritoActual.find((x: any) => x?._contexto === 'repartidor');
+        const indicacionesDireccion = (repartidorBloque?.indicaciones ?? '').toString().trim();
+
+        // Un solo geocode para Shopify (línea Plus Code + ciudad) y Ofi (calle); evita duplicar llamadas.
+        let detalleEntregaGeo: DetalleGeocodingEntrega | null = null;
+        let datosOrdenParaCrear = datosOrdenBase;
+        if (tipoEntrega === 'DELIVERY' && ubicacionOrden) {
+            detalleEntregaGeo = await this.googleGeocodingMaps.obtenerDetalleEntregaDesdeCoordenadas(
+                ubicacionOrden.lat,
+                ubicacionOrden.lng,
+            );
+            datosOrdenParaCrear = {
+                ...datosOrdenBase,
+                direccionEntrega: {
+                    address1: detalleEntregaGeo.shopifyAddress1,
+                    address2: indicacionesDireccion,
+                    city: detalleEntregaGeo.shopifyCity,
+                    province: 'Santa Cruz',
+                    provinceCode: 'SC',
+                    countryCode: 'BO',
+                    zip: '0000',
+                },
+            };
+        }
 
         console.log('[crearOrden] datosOrdenParaCrear', {
             itemsCount: datosOrdenParaCrear.items?.length,
             primerItem: datosOrdenParaCrear.items?.[0],
             direccionEntrega: datosOrdenParaCrear.direccionEntrega,
+            geocodingUsado: !!detalleEntregaGeo,
         });
 
-        const ubicacionOrden = this.obtenerUbicacionDelCarrito(carritoActual);
         const coordenadasTexto =
             ubicacionOrden != null ? `${ubicacionOrden.lat},${ubicacionOrden.lng}` : '';
         const googleMapsUrl =
             ubicacionOrden != null
                 ? `https://www.google.com/maps?q=${ubicacionOrden.lat},${ubicacionOrden.lng}`
                 : '';
-        const repartidorBloque = carritoActual.find((x: any) => x?._contexto === 'repartidor');
-        const indicacionesDireccion = (repartidorBloque?.indicaciones ?? '').toString().trim();
 
         const datosCheckoutParaMetafield: Record<string, unknown> = {
             origen: 'whatsapp',
@@ -1865,19 +1892,14 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             );
         }
 
-        // FASE 3: Crear la orden en OfiSistema (no crítico).
-        // Si hay pin en el carrito, reverse geocode en backend (misma lógica que Geocoder del front).
+        // FASE 3: Crear la orden en OfiSistema (no crítico). Reutiliza el mismo geocode que Shopify.
         let direccionOfiEntrega: DireccionOfiEntregaPayload | undefined;
-        if (tipoEntrega === 'DELIVERY' && ubicacionOrden) {
-            const formatted = await this.googleGeocodingMaps.obtenerDireccionDesdeCoordenadas(
-                ubicacionOrden.lat,
-                ubicacionOrden.lng,
-            );
+        if (tipoEntrega === 'DELIVERY' && ubicacionOrden && detalleEntregaGeo) {
             const bloqueDomicilio = carritoActual.find((x: any) => x?._contexto === 'domicilio');
             const aliasDomicilio = (bloqueDomicilio?.alias ?? '').toString().trim();
             const partesComment = [aliasDomicilio, indicacionesDireccion].filter(Boolean);
             direccionOfiEntrega = {
-                formatted,
+                formatted: detalleEntregaGeo.formattedOfi,
                 lat: ubicacionOrden.lat,
                 lng: ubicacionOrden.lng,
                 comment: partesComment.join(', '),
