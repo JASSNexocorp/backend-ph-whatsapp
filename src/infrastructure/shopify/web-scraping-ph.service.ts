@@ -10,6 +10,7 @@ import {
     WhatsappCatalogoProducto,
     WhatsappInformacionTiendaCache,
     WhatsappSucursalMenuItem,
+    WhatsappMetodosPago,
 } from "../../core/whatsapp/informacion-tienda-whatsapp.types";
 import { ShopifyAdminGraphqlService } from "./shopify-admin-graphql.service";
 import { ShopifyCatalogCollectionsService } from "./shopify-catalog-collections.service";
@@ -123,6 +124,8 @@ export class WebScrapingPhService
                     cantidad_minima: payload.configuracion_carrito.cantidad_minima,
                     costo_envio_domicilio: costoEnvio,
                 },
+                // Si el JSON no trae metodos_pago, habilitamos todos por defecto para no romper el flujo.
+                metodos_pago: this.extraerMetodosPago(payload),
             };
             const totalProductos = coleccionesConProductos.reduce((n, c) => n + c.productos.length, 0);
             this.logger.log(
@@ -246,6 +249,26 @@ export class WebScrapingPhService
             return null;
         }
         return data as WhatsAppInformacionTienda;
+    }
+
+    /**
+     * Extrae los métodos de pago del payload JSON.
+     * Si el campo no existe o un método no está definido, lo habilita por defecto (true).
+     * Nota: el JSON usa "tarjeta_credito"; internamente lo mapeamos igual para no romper el contrato del tipo.
+     */
+    private extraerMetodosPago(payload: WhatsAppInformacionTienda): WhatsappMetodosPago {
+        // Casteamos a any porque el campo es opcional en el tipo del contrato del JSON.
+        const raw = (payload as any).metodos_pago;
+        if (!raw || typeof raw !== 'object') {
+            // Sin campo metodos_pago en el JSON → todos habilitados por seguridad.
+            return { efectivo: true, tarjeta_credito: true, qr: true };
+        }
+        return {
+            // Si el campo existe pero un método no está definido, lo asumimos habilitado.
+            efectivo: raw.efectivo !== false,
+            tarjeta_credito: raw.tarjeta_credito !== false,
+            qr: raw.qr !== false,
+        };
     }
 
     /**

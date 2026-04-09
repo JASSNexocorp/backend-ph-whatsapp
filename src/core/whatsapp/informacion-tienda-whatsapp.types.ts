@@ -37,12 +37,24 @@ export interface WhatsappConfiguracionCarrito {
 }
 
 /**
+ * Métodos de pago habilitados según el JSON de configuración de la tienda.
+ * Si el JSON no incluye este campo, el bot muestra todos los métodos por defecto.
+ */
+export interface WhatsappMetodosPago {
+    efectivo: boolean;
+    tarjeta_credito: boolean;
+    qr: boolean;
+}
+
+/**
  * Raiz exacta del JSON devuelto por WHATSAPP_WEBSCRAPING_URL (solo titulo + imagen por coleccion; sin productos en origen).
  */
 export interface WhatsAppInformacionTienda {
     colecciones: WhatsappColeccionJsonItem[];
     sucursales: WhatsappSucursalMenuItem[];
     configuracion_carrito: WhatsappConfiguracionCarrito;
+    // Campo opcional: si no viene en el JSON se usan todos los métodos como fallback.
+    metodos_pago?: WhatsappMetodosPago;
 }
 
 /**
@@ -83,11 +95,13 @@ export interface WhatsappColeccionTienda {
 
 /**
  * Informacion de tienda en RAM y en la API: colecciones ya con productos embebidos (mismo orden que el JSON).
+ * metodos_pago siempre tiene valor: si el JSON no lo trae, se inicializa con todos en true.
  */
 export interface WhatsappInformacionTiendaCache {
     colecciones: WhatsappColeccionTienda[];
     sucursales: WhatsappSucursalMenuItem[];
     configuracion_carrito: WhatsappConfiguracionCarrito;
+    metodos_pago: WhatsappMetodosPago;
 }
 
 /** Par titulo + handle de coleccion en Admin API (detalle de producto). */

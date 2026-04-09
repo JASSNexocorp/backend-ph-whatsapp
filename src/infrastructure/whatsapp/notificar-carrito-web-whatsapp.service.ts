@@ -136,12 +136,26 @@ export class NotificarCarritoWebWhatsappService {
             _contexto: 'menu_web_activo',
             nombreSucursal: nombreSucursal.trim(),
             tipoEntrega: tipoEntrega.trim(),
+            // Datos de sucursal necesarios para crear la orden y mover el fulfillment.
+            sucursalShopifyLocationId: dto.sucursalShopifyLocationId ?? null,
+            sucursalOfisistemaId: dto.sucursalOfisistemaId ?? null,
+            tipoEntregaOrden: dto.tipoEntregaOrden ?? 'DELIVERY',
             notificadoEn: new Date().toISOString(),
             resumenMontos: {
                 subtotalProductos: dto.subtotalProductos,
+                // costoEnvio es necesario para mostrarlo en el resumen final y para OfiSistema.
+                costoEnvio: dto.costoEnvio,
                 total: dto.total,
                 lineas: dto.lineas.length,
             },
+            // datosOrden contiene items completos con precios, IDs y dirección de entrega.
+            // Se parsea aquí para no guardar strings anidados en el JSONB.
+            datosOrden: dto.datosOrdenSerializado
+                ? (() => {
+                    try { return JSON.parse(dto.datosOrdenSerializado); }
+                    catch { return null; }
+                  })()
+                : null,
         });
         conversacion.carrito = filtrado as any;
         conversacion.ultimaActividad = new Date();

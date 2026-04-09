@@ -20,12 +20,12 @@ export class CarritoOpcionNotificarDto {
     @IsString()
     @IsNotEmpty()
     @MaxLength(120)
-    tituloSeccion: string;
+    tituloSeccion!: string;
 
     @IsString()
     @IsNotEmpty()
     @MaxLength(200)
-    nombreOpcion: string;
+    nombreOpcion!: string;
 
     @IsOptional()
     @IsString()
@@ -50,13 +50,13 @@ export class CarritoLineaNotificarDto {
     @IsString()
     @IsNotEmpty()
     @MaxLength(300)
-    nombre: string;
+    nombre!: string;
 
     @IsNumber()
     @Min(1)
     @Max(999)
     @Type(() => Number)
-    cantidad: number;
+    cantidad!: number;
 
     @IsOptional()
     @IsArray()
@@ -72,12 +72,12 @@ export class NotificarCarritoWhatsappDto {
     @IsString()
     @IsNotEmpty()
     @MaxLength(8192)
-    token: string;
+    token!: string;
 
     @IsNumber()
     @Min(0)
     @Type(() => Number)
-    subtotalProductos: number;
+    subtotalProductos!: number;
 
     @IsOptional()
     @IsNumber()
@@ -88,16 +88,41 @@ export class NotificarCarritoWhatsappDto {
     @IsNumber()
     @Min(0)
     @Type(() => Number)
-    costoEnvio: number;
+    costoEnvio!: number;
 
     @IsNumber()
     @Min(0)
     @Type(() => Number)
-    total: number;
+    total!: number;
 
     @IsArray()
     @ArrayMinSize(1)
     @ValidateNested({ each: true })
     @Type(() => CarritoLineaNotificarDto)
-    lineas: CarritoLineaNotificarDto[];
+    lineas!: CarritoLineaNotificarDto[];
+
+    // ID del Location de Shopify de la sucursal — para mover el fulfillment después de crear la orden.
+    @IsOptional()
+    @IsString()
+    @MaxLength(128)
+    sucursalShopifyLocationId?: string;
+
+    // ID de la sucursal en el sistema OfiSistema (apiStoreId).
+    @IsOptional()
+    @IsString()
+    @MaxLength(64)
+    sucursalOfisistemaId?: string;
+
+    // Tipo de entrega en formato OfiSistema: 'DELIVERY' o 'PICKUP'.
+    @IsOptional()
+    @IsString()
+    @MaxLength(20)
+    tipoEntregaOrden?: string;
+    
+    // JSON serializado con los items completos (precios, IDs de OfiSistema, estructura pizza/otros)
+    // y la dirección de entrega formateada para Shopify. El frontend ya tiene todos estos datos.
+    @IsOptional()
+    @IsString()
+    @MaxLength(65536)
+    datosOrdenSerializado?: string;
 }

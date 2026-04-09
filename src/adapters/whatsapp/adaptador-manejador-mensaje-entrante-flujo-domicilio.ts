@@ -16,6 +16,8 @@ import { WhatsAppConversacionEntity } from "src/infrastructure/database/schemas/
 import { Repository } from "typeorm";
 import { HorarioAtencionBotWhatsappService } from "src/infrastructure/whatsapp/horario-atencion-bot-whatsapp.service";
 import { ShopifyClienteSincronizacionService } from "src/infrastructure/shopify/shopify-cliente-sincronizacion.service";
+import { ShopifyCrearOrdenService } from "src/infrastructure/shopify/shopify-crear-orden.service";
+import { OfisistemaCrearOrdenService } from "src/infrastructure/shopify/ofisistema-crear-orden.service";
 
 // Número de teléfono del agente humano que atiende consultas especiales.
 const TELEFONO_AGENTE = '+591 78452415';
@@ -39,7 +41,17 @@ type NodoConversacion =
     | 'esperando_indicaciones_repartidor'
     | 'confirmar_indicaciones'
     | 'otras_opciones'
-    | 'esperando_confirmacion_sucursal';
+    | 'esperando_confirmacion_sucursal'
+    // Recolección de datos del cliente (primer pedido o edición desde Otras opciones).
+    | 'esperando_nombre_cliente'
+    | 'esperando_email_cliente'
+    | 'esperando_razon_social'
+    | 'esperando_nit'
+    // Confirmación de datos existentes (clientes con pedidos anteriores).
+    | 'confirmando_datos_cliente'
+    // Selección de pago y confirmación final antes de crear la orden.
+    | 'seleccionando_metodo_pago'
+    | 'confirmando_pedido_final';
 
 /**
  * Handler de flujo: interpreta el mensaje entrante según el nodo_actual y responde.
@@ -70,6 +82,8 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         private readonly repoConversacion: Repository<WhatsAppConversacionEntity>,
         private readonly horarioAtencion: HorarioAtencionBotWhatsappService,
         private readonly shopifyClienteSync: ShopifyClienteSincronizacionService,
+        private readonly shopifyCrearOrden: ShopifyCrearOrdenService,
+        private readonly ofisistemaCrearOrden: OfisistemaCrearOrdenService,
     ) { }
 
     // Punto de entrada principal: lee el nodo actual y enruta al bloque correspondiente.
@@ -134,8 +148,11 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         mensaje: MensajeEntranteWhatsappNormalizado,
         conversacion: WhatsAppConversacionEntity,
     ): Promise<void> {
-        if (nodo === 'inicio' || nodo === 'menu_principal') {
-            await this.manejarMenuPrincipal(mensaje, conversacion);
+        // El nodo inicio envía imagen de bienvenida (primer contacto del usuario).
+        if (nodo === 'inicio') {
+            await this.enviarBienvenidaConMenu(mensaje.numeroWhatsappOrigen);
+            conversacion.nodoActual = 'menu_principal';
+            await this.repoConversacion.save(conversacion);
             return;
         }
         if (nodo === 'otras_opciones') {
@@ -160,6 +177,36 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         }
         if (nodo === 'esperando_confirmacion_sucursal') {
             await this.manejarConfirmacionSucursalSinServicio(mensaje, conversacion);
+            return;
+        }
+
+        // Nodos del flujo de recolección de datos y confirmación de orden.
+        if (nodo === 'esperando_nombre_cliente') {
+            await this.manejarEsperandoNombreCliente(mensaje, conversacion);
+            return;
+        }
+        if (nodo === 'esperando_email_cliente') {
+            await this.manejarEsperandoEmailCliente(mensaje, conversacion);
+            return;
+        }
+        if (nodo === 'esperando_razon_social') {
+            await this.manejarEsperandoRazonSocial(mensaje, conversacion);
+            return;
+        }
+        if (nodo === 'esperando_nit') {
+            await this.manejarEsperandoNit(mensaje, conversacion);
+            return;
+        }
+        if (nodo === 'confirmando_datos_cliente') {
+            await this.manejarConfirmandoDatosCliente(mensaje, conversacion);
+            return;
+        }
+        if (nodo === 'seleccionando_metodo_pago') {
+            await this.manejarSeleccionandoMetodoPago(mensaje, conversacion);
+            return;
+        }
+        if (nodo === 'confirmando_pedido_final') {
+            await this.manejarConfirmandoPedidoFinal(mensaje, conversacion);
             return;
         }
     }
@@ -202,10 +249,8 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         }
 
         if (id === IDS_BOTONES_CARRITO_WEB.confirmar) {
-            await this.enviarTexto(
-                numero,
-                '¡Listo! Registramos tu *confirmación*. En breve seguimos con el siguiente paso por aquí. 🍕',
-            );
+            // Arrancamos el flujo de datos: pide email o muestra datos existentes.
+            await this.iniciarFlujoConfirmacion(numero, conversacion);
         }
     }
 
@@ -256,10 +301,33 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         }
 
         if (mensaje.idBotonPresionado === 'volver_otras_opciones') {
-            // El usuario presionó "Menú" desde el listado de sucursales:
-            // lo llevamos al menú principal (Hacer pedido / Otras opciones), no al submenú.
             await this.enviarMenuPrincipal(mensaje.numeroWhatsappOrigen);
             conversacion.nodoActual = 'menu_principal';
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        if (mensaje.idBotonPresionado === 'modificar_datos') {
+            // Flujo de edición de datos desde Otras opciones: empezamos por el nombre.
+            const cliente = await this.repoCliente.findOne({
+                where: { numeroWhatsapp: mensaje.numeroWhatsappOrigen },
+            });
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                [
+                    '📝 Vamos a actualizar tus datos.',
+                    '',
+                    `Tu nombre actual es: *${cliente?.nombre ?? 'No registrado'}*`,
+                    '',
+                    'Escribe tu *nombre completo* para actualizarlo, o escribe *menu* para cancelar.',
+                ].join('\n'),
+            );
+            const carrito: any[] = Array.isArray(conversacion.carrito) ? [...(conversacion.carrito as any[])] : [];
+            const sinContexto = carrito.filter((x) => x?._contexto !== 'origen_recoleccion');
+            // Guardamos el origen para que después del NIT volvamos al menú (no al pedido).
+            sinContexto.push({ _contexto: 'origen_recoleccion', valor: 'editar_datos' });
+            conversacion.carrito = sinContexto as any;
+            conversacion.nodoActual = 'esperando_nombre_cliente';
             await this.repoConversacion.save(conversacion);
             return;
         }
@@ -278,21 +346,31 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         conversacion: WhatsAppConversacionEntity,
     ): Promise<void> {
         if (mensaje.idBotonPresionado === 'a_domicilio') {
-            await this.enviarUbicacion(
-                mensaje.numeroWhatsappOrigen,
-                [
-                    'Te solicitaremos 2 datos para la toma de tu pedido.',
-                    '',
-                    'Compárteme la *ubicación* en la que quieres tu pedido 📝📌',
-                    '_(la ubicación que envíes será donde entregaremos tu pedido)_',
-                    '',
-                    'Si quieres seleccionar un lugar *distinto* al de tu ubicación actual, debes ingresar la *dirección completa* en el mapa 📍',
-                    '',
-                    'Ejemplo: _Av. Banzer, Edif. Cristóbal_',
-                ].join('\n'),
-            );
-            conversacion.nodoActual = 'esperando_ubicacion_domicilio';
-            await this.repoConversacion.save(conversacion);
+            // Si el cliente nunca dio su nombre, lo pedimos antes de la ubicación.
+            const cliente = await this.repoCliente.findOne({
+                where: { numeroWhatsapp: mensaje.numeroWhatsappOrigen },
+            });
+            if (!cliente?.nombre) {
+                await this.enviarTexto(
+                    mensaje.numeroWhatsappOrigen,
+                    [
+                        'Te solicitaremos 3 datos para la toma de tu pedido.',
+                        '',
+                        'Para poder tomar tu orden escribe únicamente tu *nombre completo*.',
+                        '',
+                        'Ejemplo: _José Sahonero_',
+                    ].join('\n'),
+                );
+                // Guardamos el origen para saber que después del nombre vamos a la ubicación.
+                const carrito: any[] = Array.isArray(conversacion.carrito) ? [...(conversacion.carrito as any[])] : [];
+                const sinContexto = carrito.filter((x) => x?._contexto !== 'origen_recoleccion');
+                sinContexto.push({ _contexto: 'origen_recoleccion', valor: 'pre_pedido' });
+                conversacion.carrito = sinContexto as any;
+                conversacion.nodoActual = 'esperando_nombre_cliente';
+                await this.repoConversacion.save(conversacion);
+                return;
+            }
+            await this.solicitarUbicacionDomicilio(mensaje.numeroWhatsappOrigen, conversacion);
             return;
         }
 
@@ -622,13 +700,16 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         );
     }
 
-    // Envía el submenú "Otras opciones" con las opciones extras disponibles.
+    // Envía el submenú "Otras opciones": restaurantes y edición de datos personales.
     private async enviarOtrasOpciones(numeroDestino: string): Promise<void> {
         await this.enviarBotones(
             numeroDestino,
             'Selecciona una de las siguientes opciones extras 👇🏼',
             'En cualquier momento puedes regresar al menú enviando *menu*',
-            [{ id: 'ver_restaurantes', texto: 'Restaurantes' }],
+            [
+                { id: 'ver_restaurantes', texto: 'Restaurantes' },
+                { id: 'modificar_datos', texto: 'Mis datos' },
+            ],
         );
     }
 
@@ -979,5 +1060,639 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
     private async enviarUbicacion(numeroDestino: string, textoCuerpo: string): Promise<void> {
         await this.whatsapp.mostrarIndicadorEscritura(this.idMensajeActual);
         await this.whatsapp.enviarSolicitudUbicacion(numeroDestino, textoCuerpo);
+    }
+
+        // ─── NUEVOS MÉTODOS: BIENVENIDA CON IMAGEN ────────────────────────────────────
+
+    // Envía la imagen de bienvenida (si está configurada) seguida del menú principal.
+    // Se usa en el primer contacto (nodo inicio) y cuando el usuario escribe "menu".
+    private async enviarBienvenidaConMenu(numeroDestino: string): Promise<void> {
+        const urlImagen = this.config.get<string>('URL_IMAGEN_BIENVENIDA')?.trim() ?? '';
+        if (urlImagen) {
+            await this.whatsapp.mostrarIndicadorEscritura(this.idMensajeActual);
+            await this.whatsapp.enviarImagenPorURL(
+                numeroDestino,
+                urlImagen,
+                '¡Hola! Bienvenid@ a pedidos Pizza Hut 🍕',
+            );
+        }
+        await this.enviarMenuPrincipal(numeroDestino);
+    }
+
+    // ─── HELPER: SOLICITAR UBICACIÓN DOMICILIO ────────────────────────────────────
+
+    // Envía el mensaje de solicitud de ubicación y avanza el nodo a esperando_ubicacion_domicilio.
+    // Extraído como método para reutilizarlo desde la selección de tipo pedido y desde el nombre.
+    private async solicitarUbicacionDomicilio(
+        numeroDestino: string,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        await this.enviarUbicacion(
+            numeroDestino,
+            [
+                'Compárteme la *ubicación* en la que quieres tu pedido 📝📌',
+                '_(la ubicación que envíes será donde entregaremos tu pedido)_',
+                '',
+                'Si quieres seleccionar un lugar *distinto* al de tu ubicación actual, debes ingresar la *dirección completa* en el mapa 📍',
+                '',
+                'Ejemplo: _Av. Banzer, Edif. Cristóbal_',
+            ].join('\n'),
+        );
+        conversacion.nodoActual = 'esperando_ubicacion_domicilio';
+        await this.repoConversacion.save(conversacion);
+    }
+
+    // ─── NUEVOS NODOS: RECOLECCIÓN DE DATOS ──────────────────────────────────────
+
+    // Inicia el flujo de confirmación cuando el cliente presiona "Confirmar" en el carrito web.
+    // Primera vez (sin email): recolecta email → razón social → NIT → pago.
+    // Retorno (con email): muestra datos actuales con botones SI/NO.
+    private async iniciarFlujoConfirmacion(
+        numeroDestino: string,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        const cliente = await this.repoCliente.findOne({
+            where: { numeroWhatsapp: numeroDestino },
+        });
+
+        if (!cliente) {
+            await this.enviarTexto(
+                numeroDestino,
+                '❌ No pudimos encontrar tu perfil. Escribe *menu* para reintentar.',
+            );
+            return;
+        }
+
+        // Marcamos el origen como pre_pedido para que los handlers sepan adónde ir luego del NIT.
+        const carrito: any[] = Array.isArray(conversacion.carrito) ? [...(conversacion.carrito as any[])] : [];
+        const sinContexto = carrito.filter((x) => x?._contexto !== 'origen_recoleccion');
+        sinContexto.push({ _contexto: 'origen_recoleccion', valor: 'pre_pedido' });
+        conversacion.carrito = sinContexto as any;
+
+        if (!cliente.email) {
+            // Primera vez: pedimos email (el nombre ya fue recolectado al elegir domicilio).
+            await this.enviarTexto(
+                numeroDestino,
+                [
+                    '📧 Necesitamos algunos datos para tu factura.',
+                    '',
+                    'Escribe tu *correo electrónico*:',
+                    '',
+                    'Ejemplo: _tuemail@gmail.com_',
+                ].join('\n'),
+            );
+            conversacion.nodoActual = 'esperando_email_cliente';
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        // Segunda vez o más: mostramos sus últimos datos con botones para confirmar o editar.
+        await this.enviarBotones(
+            numeroDestino,
+            [
+                '📋 Estos son tus últimos datos de facturación:',
+                '',
+                `📧 *Email:* ${cliente.email}`,
+                `🏢 *Razón Social:* ${cliente.razonSocial ?? 'No especificada'}`,
+                `🔢 *NIT:* ${cliente.nit ?? '0'}`,
+                '',
+                '¿Continuar con estos datos?',
+            ].join('\n'),
+            'Podés editarlos seleccionando NO.',
+            [
+                { id: 'datos_cliente_si', texto: 'Sí, continuar' },
+                { id: 'datos_cliente_no', texto: 'No, editar' },
+            ],
+        );
+        conversacion.nodoActual = 'confirmando_datos_cliente';
+        await this.repoConversacion.save(conversacion);
+    }
+
+    // Captura el nombre del cliente, lo guarda en BD y avanza según el origen del flujo.
+    private async manejarEsperandoNombreCliente(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        if (mensaje.tipo !== 'texto') {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                'Por favor escribe tu nombre como texto. 📝',
+            );
+            return;
+        }
+
+        const nombre = (mensaje.textoPlano ?? '').trim();
+        if (!nombre || nombre.length < 2 || nombre.length > 100) {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                'Por favor escribe un nombre válido (entre 2 y 100 caracteres). 📝',
+            );
+            return;
+        }
+
+        // Persistimos el nombre en la entidad del cliente en base de datos.
+        const cliente = await this.repoCliente.findOne({
+            where: { numeroWhatsapp: mensaje.numeroWhatsappOrigen },
+        });
+        if (cliente) {
+            cliente.nombre = nombre;
+            await this.repoCliente.save(cliente);
+        }
+
+        const origen = this.obtenerOrigenRecoleccion(conversacion.carrito as any[]);
+
+        if (origen === 'editar_datos') {
+            // Flujo de edición desde Otras opciones: continuamos con email.
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                [
+                    `✅ Nombre actualizado a: *${nombre}*`,
+                    '',
+                    '📧 Ahora escribe tu *correo electrónico*:',
+                ].join('\n'),
+            );
+            conversacion.nodoActual = 'esperando_email_cliente';
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        // Flujo pre-pedido: el nombre ya está guardado, pedimos la ubicación.
+        await this.enviarTexto(
+            mensaje.numeroWhatsappOrigen,
+            `✅ Gracias, *${nombre}*. Ahora compartinos tu ubicación.`,
+        );
+        await this.solicitarUbicacionDomicilio(mensaje.numeroWhatsappOrigen, conversacion);
+    }
+
+    // Captura y valida el email del cliente, lo guarda en BD y pide la razón social.
+    private async manejarEsperandoEmailCliente(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        if (mensaje.tipo !== 'texto') {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                'Por favor escribe tu correo electrónico como texto. 📧',
+            );
+            return;
+        }
+
+        const email = (mensaje.textoPlano ?? '').trim().toLowerCase();
+        // Validación de formato de email con regex estándar.
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                [
+                    '❌ El correo que escribiste no parece válido.',
+                    '',
+                    'Por favor escríbelo nuevamente.',
+                    'Ejemplo: _tuemail@gmail.com_',
+                ].join('\n'),
+            );
+            return;
+        }
+
+        const cliente = await this.repoCliente.findOne({
+            where: { numeroWhatsapp: mensaje.numeroWhatsappOrigen },
+        });
+        if (cliente) {
+            cliente.email = email;
+            await this.repoCliente.save(cliente);
+        }
+
+        await this.enviarTexto(
+            mensaje.numeroWhatsappOrigen,
+            [
+                '✅ Email registrado.',
+                '',
+                '🏢 Ahora escribe tu *razón social* (o escribe *0* si no tenés):',
+            ].join('\n'),
+        );
+        conversacion.nodoActual = 'esperando_razon_social';
+        await this.repoConversacion.save(conversacion);
+    }
+
+    // Captura la razón social del cliente, la guarda en BD y pide el NIT.
+    private async manejarEsperandoRazonSocial(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        if (mensaje.tipo !== 'texto') {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                'Por favor escribe tu razón social como texto. 🏢',
+            );
+            return;
+        }
+
+        const entrada = (mensaje.textoPlano ?? '').trim();
+        // '0' significa "sin razón social"; guardamos null en ese caso.
+        const razonSocial = entrada === '0' ? null : entrada.slice(0, 255);
+
+        const cliente = await this.repoCliente.findOne({
+            where: { numeroWhatsapp: mensaje.numeroWhatsappOrigen },
+        });
+        if (cliente) {
+            cliente.razonSocial = razonSocial;
+            await this.repoCliente.save(cliente);
+        }
+
+        await this.enviarTexto(
+            mensaje.numeroWhatsappOrigen,
+            [
+                '✅ Razón social registrada.',
+                '',
+                '🔢 Finalmente, escribe tu *NIT* (o escribe *0* si no tenés):',
+            ].join('\n'),
+        );
+        conversacion.nodoActual = 'esperando_nit';
+        await this.repoConversacion.save(conversacion);
+    }
+
+    // Captura el NIT del cliente, lo guarda en BD y avanza según el origen del flujo.
+    private async manejarEsperandoNit(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        if (mensaje.tipo !== 'texto') {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                'Por favor escribe tu NIT como texto. 🔢',
+            );
+            return;
+        }
+
+        const entrada = (mensaje.textoPlano ?? '').trim();
+        const cliente = await this.repoCliente.findOne({
+            where: { numeroWhatsapp: mensaje.numeroWhatsappOrigen },
+        });
+        if (cliente) {
+            // '0' significa sin NIT; guardamos null para no confundir con un NIT real.
+            cliente.nit = entrada === '0' ? null : entrada.slice(0, 50);
+            await this.repoCliente.save(cliente);
+        }
+
+        const origen = this.obtenerOrigenRecoleccion(conversacion.carrito as any[]);
+
+        if (origen === 'editar_datos') {
+            // Flujo de edición terminó: informamos y volvemos al menú.
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                '✅ ¡Datos actualizados correctamente!',
+            );
+            await this.enviarMenuPrincipal(mensaje.numeroWhatsappOrigen);
+            conversacion.nodoActual = 'menu_principal';
+        } else {
+            // Flujo pre-pedido: avanzamos a la selección de método de pago.
+            await this.enviarMetodosPago(mensaje.numeroWhatsappOrigen);
+            conversacion.nodoActual = 'seleccionando_metodo_pago';
+        }
+
+        await this.repoConversacion.save(conversacion);
+    }
+
+    // Procesa la respuesta del cliente sobre si sus datos de facturación son correctos.
+    private async manejarConfirmandoDatosCliente(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        if (mensaje.idBotonPresionado === 'datos_cliente_si') {
+            await this.enviarMetodosPago(mensaje.numeroWhatsappOrigen);
+            conversacion.nodoActual = 'seleccionando_metodo_pago';
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        if (mensaje.idBotonPresionado === 'datos_cliente_no') {
+            // El cliente quiere cambiar sus datos: empezamos de nuevo por el email.
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                [
+                    '📧 Escribe tu *correo electrónico* actualizado:',
+                    '',
+                    'Ejemplo: _tuemail@gmail.com_',
+                ].join('\n'),
+            );
+            conversacion.nodoActual = 'esperando_email_cliente';
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        await this.enviarTexto(
+            mensaje.numeroWhatsappOrigen,
+            'Por favor selecciona una de las opciones. 😊',
+        );
+    }
+
+    // Registra el método de pago elegido y muestra el resumen final con totales para confirmar.
+    private async manejarSeleccionandoMetodoPago(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        // Construimos los métodos válidos desde el cache para rechazar IDs de métodos deshabilitados.
+        const cacheMetodos = this.tiendaInfo.obtenerInformacionTiendaEnCache()?.metodos_pago;
+        const metodosValidos: string[] = [];
+        if (!cacheMetodos || cacheMetodos.efectivo) metodosValidos.push('pago_efectivo');
+        if (!cacheMetodos || cacheMetodos.tarjeta_credito) metodosValidos.push('pago_tarjeta');
+        if (!cacheMetodos || cacheMetodos.qr) metodosValidos.push('pago_qr');
+        // Fallback defensivo: si el cache está vacío y la lista queda en cero, aceptamos todos.
+        const validos = metodosValidos.length > 0 ? metodosValidos : ['pago_efectivo', 'pago_tarjeta', 'pago_qr'];
+
+        if (!mensaje.idBotonPresionado || !validos.includes(mensaje.idBotonPresionado)) {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                'Por favor seleccioná un método de pago de las opciones. 💳',
+            );
+            await this.enviarMetodosPago(mensaje.numeroWhatsappOrigen);
+            return;
+        }
+
+        const metodoPagoMap: Record<string, string> = {
+            pago_efectivo: 'efectivo',
+            pago_tarjeta: 'tarjeta',
+            pago_qr: 'qr',
+        };
+        const metodoPago = metodoPagoMap[mensaje.idBotonPresionado]!;
+
+        // Persistimos el método de pago en el carrito para leerlo al crear la orden.
+        const carrito: any[] = Array.isArray(conversacion.carrito) ? [...(conversacion.carrito as any[])] : [];
+        const sinMetodo = carrito.filter((x) => x?._contexto !== 'metodo_pago');
+        sinMetodo.push({ _contexto: 'metodo_pago', metodo: metodoPago });
+        conversacion.carrito = sinMetodo as any;
+
+        // Leemos los montos guardados cuando el web notificó el carrito.
+        const contextoPedido = this.obtenerContextoMenuWebCompleto(conversacion.carrito as any[]);
+        const subtotal = contextoPedido?.resumenMontos?.subtotalProductos ?? 0;
+        const costoEnvio = contextoPedido?.resumenMontos?.costoEnvio ?? 0;
+        const total = contextoPedido?.resumenMontos?.total ?? 0;
+        const etiquetaPago = metodoPago === 'efectivo' ? '💵 Efectivo' : metodoPago === 'tarjeta' ? '💳 Tarjeta' : '📱 QR';
+
+        const lineas = [
+            '🧾 *Resumen de tu pedido:*',
+            '',
+            `Subtotal: Bs ${subtotal.toFixed(2)}`,
+            costoEnvio > 0 ? `Envío: Bs ${costoEnvio.toFixed(2)}` : null,
+            `*Total: Bs ${total.toFixed(2)}*`,
+            '',
+            `Método de pago: ${etiquetaPago}`,
+            '',
+            '¿Confirmás tu pedido?',
+        ].filter((l): l is string => l !== null);
+
+        await this.enviarBotones(
+            mensaje.numeroWhatsappOrigen,
+            lineas.join('\n'),
+            'Esta acción creará tu orden en el sistema.',
+            [
+                { id: 'pedido_confirmar_si', texto: 'Sí, confirmar' },
+                { id: 'pedido_confirmar_no', texto: 'No, cancelar' },
+            ],
+        );
+
+        conversacion.nodoActual = 'confirmando_pedido_final';
+        await this.repoConversacion.save(conversacion);
+    }
+
+    // Procesa la confirmación final: SI → crea la orden, NO → vuelve al menú principal.
+    private async manejarConfirmandoPedidoFinal(
+        mensaje: MensajeEntranteWhatsappNormalizado,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        if (mensaje.idBotonPresionado === 'pedido_confirmar_si') {
+            await this.enviarTexto(
+                mensaje.numeroWhatsappOrigen,
+                '⏳ Procesando tu pedido, dame un momento...',
+            );
+            await this.ejecutarCreacionOrden(mensaje.numeroWhatsappOrigen, conversacion);
+            return;
+        }
+
+        if (mensaje.idBotonPresionado === 'pedido_confirmar_no') {
+            await this.enviarMenuPrincipal(mensaje.numeroWhatsappOrigen);
+            conversacion.nodoActual = 'menu_principal';
+            await this.repoConversacion.save(conversacion);
+            return;
+        }
+
+        await this.enviarTexto(
+            mensaje.numeroWhatsappOrigen,
+            'Por favor seleccioná una de las opciones. 😊',
+        );
+    }
+
+    // ─── CREACIÓN DE ORDEN ────────────────────────────────────────────────────────
+
+    // Orquesta Shopify → fulfillment → OfiSistema → mensaje de éxito.
+    // Solo Shopify es crítico: si falla, informa al cliente. Fulfillment y OfiSistema no bloquean.
+    private async ejecutarCreacionOrden(
+        numeroDestino: string,
+        conversacion: WhatsAppConversacionEntity,
+    ): Promise<void> {
+        const cliente = await this.repoCliente.findOne({
+            where: { numeroWhatsapp: numeroDestino },
+        });
+        if (!cliente) {
+            await this.enviarTexto(
+                numeroDestino,
+                '❌ Error al procesar: no encontramos tu perfil. Escribe *menu* para reintentar.',
+            );
+            return;
+        }
+
+        const carritoActual = conversacion.carrito as any[];
+        const contextoPedido = this.obtenerContextoMenuWebCompleto(carritoActual);
+        const metodoPago = carritoActual.find((x: any) => x?._contexto === 'metodo_pago')?.metodo ?? 'efectivo';
+
+        if (!contextoPedido?.datosOrden?.items?.length) {
+            await this.enviarTexto(
+                numeroDestino,
+                '❌ No encontramos los productos de tu pedido. Escribe *menu* e intentá de nuevo.',
+            );
+            return;
+        }
+
+        // Derivamos el tipo de entrega: primero leemos el campo explícito, sino lo inferimos desde tipoEntrega del carrito.
+        const tipoEntregaRaw = contextoPedido.tipoEntregaOrden ?? contextoPedido.tipoEntrega ?? 'domicilio';
+        const tipoEntrega: 'DELIVERY' | 'PICKUP' =
+            tipoEntregaRaw === 'PICKUP' || tipoEntregaRaw === 'retiro' || tipoEntregaRaw === 'retiro_local'
+                ? 'PICKUP'
+                : 'DELIVERY';
+
+        // Si el frontend no envió los IDs de sucursal, los buscamos en la cache por nombre.
+        // Esto evita que el frontend deba enviar datos que ya tenemos en el servidor.
+        let locationId: string | null = contextoPedido.sucursalShopifyLocationId ?? null;
+        let ofisistemaId: string | null = contextoPedido.sucursalOfisistemaId ?? null;
+
+        if (!locationId || !ofisistemaId) {
+            const nombreSucursal = (contextoPedido.nombreSucursal ?? '').toLowerCase();
+            const cacheInfoTienda = this.tiendaInfo.obtenerInformacionTiendaEnCache();
+            const sucursalEnCache = cacheInfoTienda?.sucursales.find(
+                (s) => s.nombre.toLowerCase() === nombreSucursal,
+            );
+            if (sucursalEnCache) {
+                // Solo sobreescribimos si el valor no vino del frontend.
+                locationId = locationId ?? sucursalEnCache.id_shopify ?? null;
+                ofisistemaId = ofisistemaId ?? sucursalEnCache.id_ofisistema ?? null;
+            } else {
+                this.logger.warn(
+                    `Sucursal "${contextoPedido.nombreSucursal}" no encontrada en cache — se crea orden sin location/ofisistema ID`,
+                );
+            }
+        }
+
+        // FASE 1: Crear la orden en Shopify (operación crítica).
+        const resultadoShopify = await this.shopifyCrearOrden.crearOrden({
+            shopifyClienteId: cliente.shopifyClienteId ?? '',
+            nombreCliente: cliente.nombre ?? 'Cliente',
+            telefonoCliente: cliente.numeroWhatsapp,
+            emailCliente: cliente.email ?? undefined,
+            notaPedido: `${tipoEntrega === 'DELIVERY' ? 'Domicilio' : 'Retiro'} | Pago: ${metodoPago}`,
+            costoEnvio: contextoPedido.resumenMontos?.costoEnvio ?? 0,
+            tipoEntrega,
+            metodoPago,
+            datos: contextoPedido.datosOrden,
+        });
+
+        if (!resultadoShopify.exito) {
+            this.logger.error(`Fallo al crear orden Shopify para ${numeroDestino}: ${resultadoShopify.error}`);
+            await this.enviarTexto(
+                numeroDestino,
+                '❌ Hubo un problema al registrar tu pedido. Por favor intentá de nuevo o escribí *menu*.',
+            );
+            return;
+        }
+
+        // FASE 2: Mover el fulfillment a la sucursal correcta (no crítico).
+        if (resultadoShopify.ordenId && locationId) {
+            await this.shopifyCrearOrden.moverFulfillmentASucursal(
+                resultadoShopify.ordenId,
+                locationId,
+            );
+        }
+
+        // FASE 3: Crear la orden en OfiSistema (no crítico).
+        const resultadoOfisistema = await this.ofisistemaCrearOrden.crearOrden({
+            shopifyOrdenNombre: resultadoShopify.ordenNombre ?? '',
+            sucursalOfisistemaId: ofisistemaId ?? '0',
+            tipoEntrega,
+            metodoPago: metodoPago as 'efectivo' | 'tarjeta' | 'qr',
+            nombreCliente: cliente.nombre ?? 'Cliente',
+            apellidoCliente: '',
+            telefonoCliente: cliente.numeroWhatsapp,
+            emailCliente: cliente.email,
+            nitCliente: cliente.nit,
+            razonSocialCliente: cliente.razonSocial,
+            precioTotal: contextoPedido.resumenMontos?.total ?? 0,
+            costoEnvio: contextoPedido.resumenMontos?.costoEnvio ?? 0,
+            datos: contextoPedido.datosOrden,
+        });
+
+        // FASE 4: Limpiar el carrito y volver al menú principal.
+        const contextosPersistir = ['domicilio', 'repartidor', 'sucursal_asignada'];
+        conversacion.carrito = (carritoActual.filter(
+            (x: any) => contextosPersistir.includes(x?._contexto ?? ''),
+        )) as any;
+        conversacion.nodoActual = 'menu_principal';
+        await this.repoConversacion.save(conversacion);
+
+        // FASE 5: Enviar el mensaje de éxito con número de orden y link de OfiSistema.
+        await this.enviarMensajeExitoPedido(
+            numeroDestino,
+            resultadoShopify.ordenNombre ?? '',
+            resultadoOfisistema.linkSeguimiento,
+        );
+    }
+
+    // Envía el mensaje final de confirmación exitosa con el número de orden y el link de seguimiento.
+    private async enviarMensajeExitoPedido(
+        numeroDestino: string,
+        ordenNombre: string,
+        linkSeguimiento?: string,
+    ): Promise<void> {
+        const cuerpo = [
+            '🎉 *¡GRACIAS POR TU PREFERENCIA!*',
+            '',
+            'Tu pedido fue registrado exitosamente. 🍕',
+            '',
+            `📋 *Número de pedido:* ${ordenNombre}`,
+            '',
+            linkSeguimiento
+                ? 'Podés rastrear el estado de tu pedido en el siguiente enlace 👇🏼'
+                : 'En breve recibirás confirmación de tu pedido.',
+        ].join('\n');
+
+        const footer = 'Si deseás algo más, escribí *menu*.';
+
+        if (linkSeguimiento) {
+            // Si OfiSistema retornó un link, lo enviamos como botón CTA para mejor experiencia.
+            await this.enviarCtaUrl(
+                numeroDestino,
+                cuerpo,
+                footer,
+                'Ver estado de tu pedido',
+                linkSeguimiento,
+            );
+        } else {
+            // Sin link: enviamos texto con botón Menú para continuar.
+            await this.enviarBotones(
+                numeroDestino,
+                cuerpo,
+                footer,
+                [{ id: 'hacer_pedido', texto: 'Menú' }],
+            );
+        }
+    }
+
+    // Envía el mensaje de selección de método de pago mostrando solo los métodos habilitados en el JSON de configuración.
+    private async enviarMetodosPago(numeroDestino: string): Promise<void> {
+        // Leemos del cache para mostrar solo los métodos que están habilitados en el JSON de la tienda.
+        const metodosConfig = this.tiendaInfo.obtenerInformacionTiendaEnCache()?.metodos_pago;
+
+        const botones: Array<{ id: string; texto: string }> = [];
+        // Solo se agrega cada botón si el método está habilitado (o si el campo no existe en el JSON).
+        if (!metodosConfig || metodosConfig.efectivo) {
+            botones.push({ id: 'pago_efectivo', texto: '💵 Efectivo' });
+        }
+        if (!metodosConfig || metodosConfig.tarjeta_credito) {
+            botones.push({ id: 'pago_tarjeta', texto: '💳 Tarjeta' });
+        }
+        if (!metodosConfig || metodosConfig.qr) {
+            botones.push({ id: 'pago_qr', texto: '📱 QR' });
+        }
+
+        // Fallback: si por error de configuración no quedó ningún método, mostramos los tres.
+        if (botones.length === 0) {
+            botones.push(
+                { id: 'pago_efectivo', texto: '💵 Efectivo' },
+                { id: 'pago_tarjeta', texto: '💳 Tarjeta' },
+                { id: 'pago_qr', texto: '📱 QR' },
+            );
+        }
+
+        await this.enviarBotones(
+            numeroDestino,
+            [
+                '💳 Ya casi terminamos.',
+                '',
+                '¿Cuál es tu método de pago?',
+            ].join('\n'),
+            'Seleccioná una opción.',
+            botones,
+        );
+    }
+
+    // ─── HELPERS ADICIONALES DE CONTEXTO ─────────────────────────────────────────
+
+    // Lee el contexto 'menu_web_activo' completo del carrito JSONB (con datosOrden y montos).
+    private obtenerContextoMenuWebCompleto(carrito: any[]): any | null {
+        if (!Array.isArray(carrito)) return null;
+        return carrito.find((x) => x?._contexto === 'menu_web_activo') ?? null;
+    }
+
+    // Lee el origen del flujo de recolección de datos: 'pre_pedido' (orden) o 'editar_datos' (otras opciones).
+    private obtenerOrigenRecoleccion(carrito: any[]): 'pre_pedido' | 'editar_datos' {
+        if (!Array.isArray(carrito)) return 'pre_pedido';
+        const ctx = carrito.find((x) => x?._contexto === 'origen_recoleccion');
+        return ctx?.valor === 'editar_datos' ? 'editar_datos' : 'pre_pedido';
     }
 }

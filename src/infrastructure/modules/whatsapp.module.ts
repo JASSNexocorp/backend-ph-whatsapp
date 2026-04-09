@@ -14,6 +14,8 @@ import { NotificarCarritoWebWhatsappService } from '../whatsapp/notificar-carrit
 import { ShopifyInformacionModule } from './shopify-informacion.modulo';
 import { HorarioAtencionBotWhatsappService } from '../whatsapp/horario-atencion-bot-whatsapp.service';
 import { ShopifyClienteSincronizacionService } from '../shopify/shopify-cliente-sincronizacion.service';
+import { ShopifyCrearOrdenService } from '../shopify/shopify-crear-orden.service';
+import { OfisistemaCrearOrdenService } from '../shopify/ofisistema-crear-orden.service';
 
 /**
  * Módulo WhatsApp: Webhook + cliente HTTP hacia Graph API para enviar mensajes.
@@ -54,6 +56,8 @@ import { ShopifyClienteSincronizacionService } from '../shopify/shopify-cliente-
 
         HorarioAtencionBotWhatsappService,
         ShopifyClienteSincronizacionService,
+        ShopifyCrearOrdenService,
+        OfisistemaCrearOrdenService,
 
         // Orquestador principal del webhook entrante.
         {
