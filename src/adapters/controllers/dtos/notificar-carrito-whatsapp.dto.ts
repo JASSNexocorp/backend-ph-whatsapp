@@ -47,6 +47,17 @@ export class CarritoLineaNotificarDto {
     @MaxLength(64)
     idShopify?: string;
 
+    /** Número objeto/combo Tictuk (objNum en integrationId |CM…). El front puede enviarlo como object_number. */
+    @IsOptional()
+    @IsString()
+    @MaxLength(64)
+    object_number?: string;
+
+    @IsOptional()
+    @IsString()
+    @MaxLength(64)
+    objectNumber?: string;
+
     @IsString()
     @IsNotEmpty()
     @MaxLength(300)

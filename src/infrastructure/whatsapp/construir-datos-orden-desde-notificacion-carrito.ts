@@ -10,6 +10,9 @@ import type {
 export interface LineaCarritoNotificacionPlana {
     idOfisistema?: string;
     idShopify?: string;
+    /** Mismo contrato que el POST notificar-carrito (`object_number` o `objectNumber`). */
+    object_number?: string;
+    objectNumber?: string;
     nombre: string;
     cantidad: number;
     opciones?: Array<{
@@ -66,10 +69,11 @@ export function construirDatosOrdenDesdeLineasNotificacion(
         const nombreLower = (l.nombre ?? '').toLowerCase();
         const coleccionesNombre = nombreLower.includes('pizza') ? ['pizza'] : undefined;
 
+        const objNum = String(l.object_number ?? l.objectNumber ?? '').trim();
         return {
             idVarianteShopify: (l.idShopify ?? '').trim(),
             idOfisistema: (l.idOfisistema ?? '').trim() || '0',
-            objNum: '',
+            objNum,
             nombre: l.nombre,
             cantidad: cant,
             precioBase,

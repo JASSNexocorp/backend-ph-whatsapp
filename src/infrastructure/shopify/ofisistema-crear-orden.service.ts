@@ -18,6 +18,15 @@ const TICTUK_STORE_ID = '753d6cde-1f9b-1e9f-70cd-fc048eb25ce0';
 // GUID del campo counter requerido por Tictuk en cada variación.
 const CONTADOR_GUID = '75c860b5-1392-d9ed-6a73-fb7b85abb4d8';
 
+/** Dirección en formato Tictuk cuando ya tenemos reverse geocode + coordenadas (WhatsApp / domicilio). */
+export interface DireccionOfiEntregaPayload {
+    formatted: string;
+    lat: number;
+    lng: number;
+    /** Se envía en `address.comment` (alias del pin, indicaciones al repartidor, etc.). */
+    comment: string;
+}
+
 export interface EntradaCrearOrdenOfisistema {
     shopifyOrdenNombre: string;
     sucursalOfisistemaId: string;
@@ -32,6 +41,8 @@ export interface EntradaCrearOrdenOfisistema {
     precioTotal: number;
     costoEnvio: number;
     datos: DatosOrdenSerializado;
+    /** Si viene, reemplaza el armado de `address` para DELIVERY (formatted + latLng + comment). */
+    direccionOfiEntrega?: DireccionOfiEntregaPayload;
 }
 
 export interface ResultadoCrearOrdenOfisistema {
@@ -61,18 +72,21 @@ export class OfisistemaCrearOrdenService {
                 precioTotal: entrada.precioTotal,
                 costoEnvio: entrada.costoEnvio,
                 itemsCount: entrada.datos?.items?.length,
+                tieneDireccionOfi: !!entrada.direccionOfiEntrega,
             },
         });
         try {
             const idSucursalLimpio = this.normalizarApiStoreIdTictuk(entrada.sucursalOfisistemaId);
             const items = this.construirItems(entrada.datos.items, entrada.tipoEntrega);
+            const telefonoContacto = this.normalizarTelefonoContactoOfi(entrada.telefonoCliente);
 
             // Los precios se envían en centavos (x100) según el contrato de la API Tictuk.
             const precioTotalCentavos = Math.round(entrada.precioTotal * 100);
             const costoEnvioCentavos = Math.round(entrada.costoEnvio * 100);
 
             const payload = {
-                tictukOrderId: entrada.shopifyOrdenNombre.replace('#', ''),
+                // Tictuk espera el número de orden con # al inicio (no se elimina).
+                tictukOrderId: this.normalizarTictukOrderId(entrada.shopifyOrdenNombre),
                 developer: 'com.ph.web',
                 tictukStoreId: TICTUK_STORE_ID,
                 locale: 'es_ES',
@@ -81,18 +95,18 @@ export class OfisistemaCrearOrdenService {
                 contact: {
                     firstName: entrada.nombreCliente,
                     lastName: entrada.apellidoCliente,
-                    phone: entrada.telefonoCliente,
+                    phone: telefonoContacto,
                     email: entrada.emailCliente ?? '',
                 },
                 orderType: entrada.tipoEntrega,
                 tip: '0',
                 tableId: '',
                 orderItems: items,
+                // Sin línea RS: NIT y razón se cubren con NIT en el comentario operativo.
                 comment: [
                     `PAGO : ${this.mapearMetodoPago(entrada.metodoPago).toUpperCase()}`,
-                    `TEL : ${entrada.telefonoCliente}`,
+                    `TEL : ${telefonoContacto}`,
                     `NIT: ${entrada.nitCliente ?? ''}`,
-                    entrada.razonSocialCliente ? `RS: ${entrada.razonSocialCliente}` : '',
                 ].filter(Boolean).join(' | '),
                 price: `${precioTotalCentavos}`,
                 timezone: 'America/La_Paz',
@@ -100,10 +114,8 @@ export class OfisistemaCrearOrdenService {
                 onlinePayment: 'false',
                 deliveryCharge: entrada.tipoEntrega === 'DELIVERY' ? `${costoEnvioCentavos}` : '0',
                 deliveredBy: new Date().toISOString().slice(0, 19).replace('T', ' '),
-                // La dirección solo se incluye en pedidos a domicilio.
-                address: entrada.tipoEntrega === 'DELIVERY' && entrada.datos.direccionEntrega
-                    ? this.construirDireccion(entrada.datos.direccionEntrega)
-                    : [],
+                // DELIVERY: prioridad al bloque enriquecido (geocode + latLng); si no, dirección Shopify/plana.
+                address: this.resolverAddressPayload(entrada),
                 pickupBy: null,
                 paymentGatewayApprovalID: null,
                 paymentGatewayName: null,
@@ -113,7 +125,7 @@ export class OfisistemaCrearOrdenService {
                 dynamicAnswers: null,
                 sduplicate: false,
                 chargeAmount: '0',
-                channel: 'WhatsApp',
+                channel: 'Web',
                 note: null,
                 subOrderType: null,
                 HostAuthorizationCode: null,
@@ -175,16 +187,20 @@ export class OfisistemaCrearOrdenService {
 
             const variationsChoices = this.construirVariaciones(item, metodoEntrega, esPizza);
             const esSimple = !item.opciones || item.opciones.length === 0;
+            const idOfi = String(item.idOfisistema ?? '').trim();
+            const objNum = String(item.objNum ?? '').trim();
 
-            // integrationId incluye el objNum del combo cuando el producto tiene variaciones.
+            // integrationId: solo se añade |CM{objNum} cuando hay combo con opciones y objNum no vacío.
             const integrationId = esSimple
-                ? item.idOfisistema 
-                : `${item.idOfisistema }|CM${item.objNum ?? ''}`;
+                ? idOfi
+                : objNum
+                    ? `${idOfi}|CM${objNum}`
+                    : idOfi;
 
             // Cada unidad del mismo producto es un item separado en OfiSistema.
             for (let i = 0; i < (item.cantidad ?? 1); i++) {
                 resultado.push({
-                    tictukItemId: `${metodoEntrega}${item.idOfisistema }`,
+                    tictukItemId: `${metodoEntrega}${idOfi}`,
                     integrationId,
                     taxCode: null,
                     title: item.nombre,
@@ -286,15 +302,49 @@ export class OfisistemaCrearOrdenService {
         };
     }
 
-    // Construye el objeto de dirección en el formato que espera la API de OfiSistema.
-    private construirDireccion(
+    // Arma `address` según tipo de entrega: vacío en retiro, bloque Tictuk en domicilio.
+    private resolverAddressPayload(entrada: EntradaCrearOrdenOfisistema): unknown[] | Record<string, unknown> {
+        if (entrada.tipoEntrega !== 'DELIVERY') {
+            return [];
+        }
+        if (entrada.direccionOfiEntrega) {
+            return this.construirDireccionOfi(entrada.direccionOfiEntrega);
+        }
+        if (entrada.datos.direccionEntrega) {
+            return this.construirDireccionDesdeShopify(entrada.datos.direccionEntrega);
+        }
+        return [];
+    }
+
+    // Formato acordado con Tictuk: formatted + calle vacía + número 0 + latLng + comment.
+    private construirDireccionOfi(d: DireccionOfiEntregaPayload): Record<string, unknown> {
+        return {
+            formatted: d.formatted,
+            countryCode: 'BO',
+            city: 'Santa Cruz de la Sierra',
+            street: '',
+            number: '0',
+            apt: null,
+            floor: null,
+            entrance: null,
+            pobox: null,
+            comment: d.comment ?? '',
+            latLng: { lat: d.lat, lng: d.lng },
+            approximate: 'false',
+            postalCode: null,
+            additionalInfo: '',
+        };
+    }
+
+    // Respaldo cuando no hay coordenadas: misma forma sin latLng (solo texto de Shopify/nota).
+    private construirDireccionDesdeShopify(
         dir: NonNullable<DatosOrdenSerializado['direccionEntrega']>,
     ): Record<string, unknown> {
         return {
             formatted: dir.address1,
             countryCode: dir.countryCode ?? 'BO',
             city: dir.city ?? 'Santa Cruz de la Sierra',
-            street: dir.address1,
+            street: '',
             number: '0',
             apt: null,
             floor: null,
@@ -302,9 +352,27 @@ export class OfisistemaCrearOrdenService {
             pobox: null,
             comment: dir.address2 ?? '',
             approximate: 'false',
-            postalCode: null,
+            postalCode: dir.zip ?? null,
             additionalInfo: '',
         };
+    }
+
+    // Asegura # al inicio del nombre de orden que viene de Shopify (ej. #1023).
+    private normalizarTictukOrderId(nombre: string): string {
+        const t = (nombre ?? '').trim();
+        if (!t) {
+            return '#';
+        }
+        return t.startsWith('#') ? t : `#${t}`;
+    }
+
+    // Quita prefijo 591 y deja solo dígitos para el campo phone de Tictuk.
+    private normalizarTelefonoContactoOfi(telefono: string): string {
+        let digitos = (telefono ?? '').replace(/\D/g, '');
+        if (digitos.startsWith('591') && digitos.length > 8) {
+            digitos = digitos.slice(3);
+        }
+        return digitos;
     }
 
     // Extrae el link de seguimiento de la respuesta de OfiSistema (puede ser texto o JSON).

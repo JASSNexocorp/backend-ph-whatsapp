@@ -18,7 +18,11 @@ import { HorarioAtencionBotWhatsappService } from "src/infrastructure/whatsapp/h
 import { ShopifyClienteSincronizacionService } from "src/infrastructure/shopify/shopify-cliente-sincronizacion.service";
 import type { DatosOrdenSerializado } from "src/infrastructure/shopify/shopify-crear-orden.service";
 import { ShopifyCrearOrdenService } from "src/infrastructure/shopify/shopify-crear-orden.service";
-import { OfisistemaCrearOrdenService } from "src/infrastructure/shopify/ofisistema-crear-orden.service";
+import {
+    DireccionOfiEntregaPayload,
+    OfisistemaCrearOrdenService,
+} from "src/infrastructure/shopify/ofisistema-crear-orden.service";
+import { GoogleGeocodingMapsService } from "src/infrastructure/maps/google-geocoding-maps.service";
 
 // Número de teléfono del agente humano que atiende consultas especiales.
 const TELEFONO_AGENTE = '+591 78452415';
@@ -88,6 +92,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         private readonly shopifyClienteSync: ShopifyClienteSincronizacionService,
         private readonly shopifyCrearOrden: ShopifyCrearOrdenService,
         private readonly ofisistemaCrearOrden: OfisistemaCrearOrdenService,
+        private readonly googleGeocodingMaps: GoogleGeocodingMapsService,
     ) { }
 
     // Punto de entrada principal: lee el nodo actual y enruta al bloque correspondiente.
@@ -1861,6 +1866,24 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
         }
 
         // FASE 3: Crear la orden en OfiSistema (no crítico).
+        // Si hay pin en el carrito, reverse geocode en backend (misma lógica que Geocoder del front).
+        let direccionOfiEntrega: DireccionOfiEntregaPayload | undefined;
+        if (tipoEntrega === 'DELIVERY' && ubicacionOrden) {
+            const formatted = await this.googleGeocodingMaps.obtenerDireccionDesdeCoordenadas(
+                ubicacionOrden.lat,
+                ubicacionOrden.lng,
+            );
+            const bloqueDomicilio = carritoActual.find((x: any) => x?._contexto === 'domicilio');
+            const aliasDomicilio = (bloqueDomicilio?.alias ?? '').toString().trim();
+            const partesComment = [aliasDomicilio, indicacionesDireccion].filter(Boolean);
+            direccionOfiEntrega = {
+                formatted,
+                lat: ubicacionOrden.lat,
+                lng: ubicacionOrden.lng,
+                comment: partesComment.join(', '),
+            };
+        }
+
         console.log('[crearOrden] FASE 3 → OfiSistema crearOrden...');
         const resultadoOfisistema = await this.ofisistemaCrearOrden.crearOrden({
             shopifyOrdenNombre: resultadoShopify.ordenNombre ?? '',
@@ -1876,6 +1899,7 @@ export class AdaptadorManejadorMensajeEntranteFlujoDomicilio implements PuertoMa
             precioTotal: contextoPedido.resumenMontos?.total ?? 0,
             costoEnvio: contextoPedido.resumenMontos?.costoEnvio ?? 0,
             datos: datosOrdenParaCrear,
+            direccionOfiEntrega,
         });
 
         console.log('[crearOrden] resultado OfiSistema', resultadoOfisistema);

@@ -16,6 +16,7 @@ import { HorarioAtencionBotWhatsappService } from '../whatsapp/horario-atencion-
 import { ShopifyClienteSincronizacionService } from '../shopify/shopify-cliente-sincronizacion.service';
 import { ShopifyCrearOrdenService } from '../shopify/shopify-crear-orden.service';
 import { OfisistemaCrearOrdenService } from '../shopify/ofisistema-crear-orden.service';
+import { GoogleGeocodingMapsService } from '../maps/google-geocoding-maps.service';
 
 /**
  * Módulo WhatsApp: Webhook + cliente HTTP hacia Graph API para enviar mensajes.
@@ -58,6 +59,7 @@ import { OfisistemaCrearOrdenService } from '../shopify/ofisistema-crear-orden.s
         ShopifyClienteSincronizacionService,
         ShopifyCrearOrdenService,
         OfisistemaCrearOrdenService,
+        GoogleGeocodingMapsService,
 
         // Orquestador principal del webhook entrante.
         {
